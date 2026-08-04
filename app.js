@@ -33,6 +33,7 @@
     rejectingClaimId: null,
     editingClaimId: null,
     confirmDeleteClaimId: null,
+    claimFormError: null,
     editingAllocId: null,
     confirmDeactivateId: null,
     confirmRevokeInvite: null,
@@ -391,6 +392,7 @@
   }
 
   function renderClaimForm(){
+    var wallet = computeWallet(STATE.profile.id);
     return '<div class="card"><div class="card-title">Submit a New Claim</div>'+
       '<form data-form="submit-claim" class="claim-form">'+
         '<label>Benefit Category<select name="category" required><option value="">Select a category...</option>'+
@@ -399,8 +401,10 @@
         '<label>Vendor / Merchant<input type="text" name="vendor" list="vendor-options-new" required placeholder="e.g. California Fitness" autocomplete="off" /></label>'+
         renderVendorDatalist('vendor-options-new')+
         '<label>Amount to Claim (SGD)<input type="number" name="amount" step="0.01" min="0.01" required placeholder="e.g. 120.00" /></label>'+
+        '<div class="muted small">Available balance: '+fmtMoney(wallet.available)+'</div>'+
         '<label>Date of Receipt<input type="date" name="receiptDate" required max="'+todayStr()+'" /></label>'+
         '<label>Upload Receipt (photo or PDF, max 4MB)<input type="file" name="receipt" accept="image/*,.pdf" required /></label>'+
+        (STATE.claimFormError ? '<div class="field-error">'+escapeHtml(STATE.claimFormError)+'</div>' : '')+
         '<div class="field-hint">Only Gym membership, Health screening, Optical, Dental and Leisure travel are claimable. Other expenses, including petrol, cannot be reimbursed through this wallet.</div>'+
         '<button type="submit" class="btn btn-primary">Submit Claim</button>'+
       '</form></div>';
@@ -513,6 +517,7 @@
       '<label>Amount<input type="number" id="edit-amount-'+c.id+'" step="0.01" min="0.01" value="'+c.amount+'"/></label>'+
       '<label>Receipt Date<input type="date" id="edit-date-'+c.id+'" value="'+c.receipt_date+'" max="'+todayStr()+'"/></label>'+
       '<label>Replace Receipt (optional)<input type="file" id="edit-receipt-'+c.id+'" accept="image/*,.pdf"/></label>'+
+      (STATE.claimFormError ? '<div class="field-error">'+escapeHtml(STATE.claimFormError)+'</div>' : '')+
       (c.status==='rejected' ? '<div class="field-hint">Saving will resubmit this claim for review.</div>' : '')+
       '<div class="reject-actions">'+
         '<button class="btn btn-sm btn-primary" data-action="confirm-edit-claim" data-id="'+c.id+'">Save Changes</button>'+
@@ -790,6 +795,15 @@
     var file = form.receipt.files[0];
     if(!category || !vendor || !amount || amount<=0 || !receiptDate || !file){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
     if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return Promise.resolve(); }
+
+    var wallet = computeWallet(STATE.profile.id);
+    if(amount > wallet.available){
+      STATE.claimFormError = 'You can only claim up to '+fmtMoney(wallet.available)+' based on your available Flex wallet balance.';
+      render();
+      return Promise.resolve();
+    }
+    STATE.claimFormError = null;
+
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Uploading...';
     return uploadReceipt(file).then(function(receipt){
@@ -854,6 +868,16 @@
     var amount = amtInput ? parseFloat(amtInput.value) : claim.amount;
     var receiptDate = dateInput ? dateInput.value : claim.receipt_date;
     if(!category || !vendor || !amount || amount<=0 || !receiptDate){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
+
+    var wallet = computeWallet(STATE.profile.id);
+    var availableForThisEdit = claim.status==='pending' ? wallet.available + Number(claim.amount) : wallet.available;
+    if(amount > availableForThisEdit){
+      STATE.claimFormError = 'You can only claim up to '+fmtMoney(availableForThisEdit)+' based on your available Flex wallet balance.';
+      render();
+      return Promise.resolve();
+    }
+    STATE.claimFormError = null;
+
     var file = fileInput && fileInput.files && fileInput.files[0];
     var wasRejected = claim.status === 'rejected';
 
@@ -1011,7 +1035,7 @@
       case 'show-signup': STATE.authView='signup'; STATE.authError=''; STATE.authInfo=''; render(); return Promise.resolve();
       case 'show-login': STATE.authView='login'; STATE.authError=''; STATE.authInfo=''; render(); return Promise.resolve();
       case 'forgot-password': return handleForgotPassword();
-      case 'nav': STATE.activeTab = btn.dataset.tab; render(); return Promise.resolve();
+      case 'nav': STATE.activeTab = btn.dataset.tab; STATE.claimFormError=null; render(); return Promise.resolve();
       case 'logout': return supabase.auth.signOut();
       case 'buy-pa': window.open('https://insure.aia.com.sg/aianow3/solitaire?f=43519&i=agy', '_blank', 'noopener,noreferrer'); return Promise.resolve();
       case 'view-receipt': openReceiptModal(id); return Promise.resolve();
@@ -1021,8 +1045,8 @@
       case 'cancel-reject': STATE.rejectingClaimId=null; render(); return Promise.resolve();
       case 'confirm-reject': return confirmReject(id);
       case 'mark-read': return markNotificationRead(id);
-      case 'start-edit-claim': STATE.editingClaimId=id; STATE.confirmDeleteClaimId=null; render(); return Promise.resolve();
-      case 'cancel-edit-claim': STATE.editingClaimId=null; render(); return Promise.resolve();
+      case 'start-edit-claim': STATE.editingClaimId=id; STATE.confirmDeleteClaimId=null; STATE.claimFormError=null; render(); return Promise.resolve();
+      case 'cancel-edit-claim': STATE.editingClaimId=null; STATE.claimFormError=null; render(); return Promise.resolve();
       case 'confirm-edit-claim': return confirmEditClaim(id);
       case 'delete-claim': STATE.confirmDeleteClaimId=id; STATE.editingClaimId=null; render(); return Promise.resolve();
       case 'delete-claim-cancel': STATE.confirmDeleteClaimId=null; render(); return Promise.resolve();
