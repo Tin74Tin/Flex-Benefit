@@ -68,6 +68,21 @@
     return '<datalist id="'+id+'">'+vendorSuggestions().map(function(v){ return '<option value="'+escapeHtml(v)+'"></option>'; }).join('')+'</datalist>';
   }
 
+  function claimCutoffNotice(){
+    var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    var now = new Date();
+    var year = now.getFullYear();
+    var month = now.getMonth();
+    var cutoff = new Date(year, month, 25, 23, 59, 59, 999);
+    var cutoffLabel = '25 ' + monthNames[month].slice(0,3) + ' ' + year + ', 23:59';
+    if(now <= cutoff){
+      return 'Submit by ' + cutoffLabel + ' to have this claim processed in ' + monthNames[month] + '. Submissions after this cutoff are processed the following month.';
+    }
+    var nextMonthIdx = (month + 1) % 12;
+    var nextMonthYear = month === 11 ? year + 1 : year;
+    return 'This month\'s cutoff (' + cutoffLabel + ') has passed. Claims submitted now will be processed in ' + monthNames[nextMonthIdx] + ' ' + nextMonthYear + '.';
+  }
+
   function captureClaimFormValues(){
     var form = document.querySelector('form[data-form="submit-claim"]');
     if(!form) return null;
@@ -394,6 +409,7 @@
   function renderClaimForm(){
     var wallet = computeWallet(STATE.profile.id);
     return '<div class="card"><div class="card-title">Submit a New Claim</div>'+
+      '<div class="info-banner banner-warning">'+escapeHtml(claimCutoffNotice())+'</div>'+
       '<form data-form="submit-claim" class="claim-form">'+
         '<label>Benefit Category<select name="category" required><option value="">Select a category...</option>'+
           STATE.benefits.map(function(b){ return '<option value="'+escapeHtml(b)+'">'+escapeHtml(b)+'</option>'; }).join('')+
