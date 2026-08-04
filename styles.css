@@ -192,3 +192,4 @@
   .info-banner{background:var(--primary-light);color:var(--primary-dark);padding:12px 14px;border-radius:var(--radius-sm);font-size:13px;line-height:1.6;margin-top:14px;}
   .banner-danger{background:var(--danger-bg);color:var(--danger);}
   .banner-success{background:var(--success-bg);color:var(--success);}
+  .banner-warning{background:var(--warning-bg);color:var(--warning);}
