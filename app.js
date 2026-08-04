@@ -400,8 +400,9 @@
         '</select></label>'+
         '<label>Vendor / Merchant<input type="text" name="vendor" list="vendor-options-new" required placeholder="e.g. California Fitness" autocomplete="off" /></label>'+
         renderVendorDatalist('vendor-options-new')+
-        '<label>Amount to Claim (SGD)<input type="number" name="amount" step="0.01" min="0.01" required placeholder="e.g. 120.00" /></label>'+
+        '<label>Amount to Claim (SGD)<input type="number" id="claim-amount-input" name="amount" step="0.01" min="0.01" required placeholder="e.g. 120.00" /></label>'+
         '<div class="muted small">Available balance: '+fmtMoney(wallet.available)+'</div>'+
+        '<div id="claim-amount-live-error" class="field-error" style="display:none;"></div>'+
         '<label>Date of Receipt<input type="date" name="receiptDate" required max="'+todayStr()+'" /></label>'+
         '<label>Upload Receipt (photo or PDF, max 4MB)<input type="file" name="receipt" accept="image/*,.pdf" required /></label>'+
         (STATE.claimFormError ? '<div class="field-error">'+escapeHtml(STATE.claimFormError)+'</div>' : '')+
@@ -515,6 +516,7 @@
       '<label>Vendor / Merchant<input type="text" id="edit-vendor-'+c.id+'" list="vendor-options-'+c.id+'" value="'+escapeHtml(c.vendor||'')+'" autocomplete="off"/></label>'+
       renderVendorDatalist('vendor-options-'+c.id)+
       '<label>Amount<input type="number" id="edit-amount-'+c.id+'" step="0.01" min="0.01" value="'+c.amount+'"/></label>'+
+      '<div id="edit-amount-live-error-'+c.id+'" class="field-error" style="display:none;"></div>'+
       '<label>Receipt Date<input type="date" id="edit-date-'+c.id+'" value="'+c.receipt_date+'" max="'+todayStr()+'"/></label>'+
       '<label>Replace Receipt (optional)<input type="file" id="edit-receipt-'+c.id+'" accept="image/*,.pdf"/></label>'+
       (STATE.claimFormError ? '<div class="field-error">'+escapeHtml(STATE.claimFormError)+'</div>' : '')+
@@ -1096,6 +1098,36 @@
     }
   }
 
+  function liveCheckAmount(input, available, errorId){
+    var el = document.getElementById(errorId);
+    if(!el) return;
+    var val = parseFloat(input.value);
+    if(!isNaN(val) && val > available){
+      el.textContent = 'You can only claim up to '+fmtMoney(available)+' based on your available Flex wallet balance.';
+      el.style.display = '';
+    } else {
+      el.textContent = '';
+      el.style.display = 'none';
+    }
+  }
+
+  function handleInput(e){
+    var t = e.target;
+    if(!STATE.profile) return;
+    if(t.id==='claim-amount-input'){
+      var wallet = computeWallet(STATE.profile.id);
+      liveCheckAmount(t, wallet.available, 'claim-amount-live-error');
+    } else if(t.id && t.id.indexOf('edit-amount-')===0){
+      var claimId = t.id.slice('edit-amount-'.length);
+      var claim = STATE.claims.filter(function(c){ return c.id===claimId; })[0];
+      if(claim){
+        var w = computeWallet(STATE.profile.id);
+        var availableForEdit = claim.status==='pending' ? w.available + Number(claim.amount) : w.available;
+        liveCheckAmount(t, availableForEdit, 'edit-amount-live-error-'+claimId);
+      }
+    }
+  }
+
   /* =========================================================
      BOOTSTRAP
   ========================================================== */
@@ -1103,6 +1135,7 @@
   app.addEventListener('click', function(e){ handleClick(e).catch(function(err){ console.error(err); }); });
   app.addEventListener('submit', function(e){ handleSubmit(e).catch(function(err){ console.error(err); }); });
   app.addEventListener('change', function(e){ handleChange(e).catch(function(err){ console.error(err); }); });
+  app.addEventListener('input', handleInput);
 
   init();
 })();
