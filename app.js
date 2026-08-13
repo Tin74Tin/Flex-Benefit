@@ -47,6 +47,35 @@
      UTILITIES
   ========================================================== */
   function fmtMoney(n){ n = isFinite(n)?n:0; var neg = n<0; n=Math.abs(n); var s='$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); return neg? '-'+s : s; }
+  var CURRENCY_OPTIONS = ['SGD','USD','MYR','IDR','GBP','EUR','AUD','CNY'];
+  function renderCurrencyOptions(selected){
+    return CURRENCY_OPTIONS.map(function(cur){
+      return '<option value="'+cur+'" '+(cur===(selected||'SGD')?'selected':'')+'>'+cur+'</option>';
+    }).join('');
+  }
+  function fmtCurrencyAmount(currency, amount){
+    var n = Number(amount)||0;
+    return (currency||'SGD')+' '+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+
+  var EXCHANGE_RATE_CACHE = {};
+  var EXCHANGE_RATE_CACHE_MS = 60*60*1000;
+  function getExchangeRateToSGD(currency){
+    if(!currency || currency==='SGD') return Promise.resolve(1);
+    var cached = EXCHANGE_RATE_CACHE[currency];
+    if(cached && (Date.now()-cached.at) < EXCHANGE_RATE_CACHE_MS){
+      return Promise.resolve(cached.rate);
+    }
+    return fetch('https://api.frankfurter.app/latest?from='+encodeURIComponent(currency)+'&to=SGD')
+      .then(function(res){ if(!res.ok) throw new Error('Exchange rate lookup failed ('+res.status+')'); return res.json(); })
+      .then(function(data){
+        var rate = data && data.rates && data.rates.SGD;
+        if(!rate || isNaN(rate)) throw new Error('No exchange rate returned for '+currency);
+        EXCHANGE_RATE_CACHE[currency] = {rate:rate, at:Date.now()};
+        return rate;
+      });
+  }
+
   function fmtDate(d){ if(!d) return '-'; var dt=new Date(d+'T00:00:00'); if(isNaN(dt)) return d; return dt.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
   function fmtDateTime(iso){ if(!iso) return '-'; var dt=new Date(iso); if(isNaN(dt)) return iso; return dt.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
   function escapeHtml(str){ return String(str==null?'':str).replace(/[&<>"']/g, function(s){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]; }); }
@@ -105,6 +134,10 @@
   /* =========================================================
      BUSINESS LOGIC
   ========================================================== */
+  function sgdAmountOf(c){
+    return Number(c.amount_sgd != null ? c.amount_sgd : c.amount) || 0;
+  }
+
   function computeWallet(employeeId){
     var profile = profileById(employeeId) || {annual_allocation:0};
     var empClaims = STATE.claims.filter(function(c){ return c.employee_id===employeeId; });
@@ -112,9 +145,10 @@
     var byCategory = {};
     STATE.benefits.forEach(function(b){ byCategory[b] = {approved:0, pending:0}; });
     empClaims.forEach(function(c){
+      var amt = sgdAmountOf(c);
       if(!byCategory[c.category]) byCategory[c.category] = {approved:0, pending:0};
-      if(c.status==='approved'){ approvedTotal+=Number(c.amount); byCategory[c.category].approved+=Number(c.amount); }
-      if(c.status==='pending'){ pendingTotal+=Number(c.amount); byCategory[c.category].pending+=Number(c.amount); }
+      if(c.status==='approved'){ approvedTotal+=amt; byCategory[c.category].approved+=amt; }
+      if(c.status==='pending'){ pendingTotal+=amt; byCategory[c.category].pending+=amt; }
     });
     var allocation = Number(profile.annual_allocation)||0;
     var available = allocation - approvedTotal - pendingTotal;
@@ -130,7 +164,7 @@
     });
     var byCategory={}, byEmployee={}, totalClaimed=0;
     filtered.forEach(function(c){
-      var amt = Number(c.amount);
+      var amt = sgdAmountOf(c);
       totalClaimed+=amt;
       byCategory[c.category] = byCategory[c.category]||{count:0,total:0};
       byCategory[c.category].count++; byCategory[c.category].total+=amt;
@@ -416,8 +450,12 @@
         '</select></label>'+
         '<label>Vendor / Merchant<input type="text" name="vendor" list="vendor-options-new" required placeholder="e.g. California Fitness" autocomplete="off" /></label>'+
         renderVendorDatalist('vendor-options-new')+
-        '<label>Amount to Claim (SGD)<input type="number" id="claim-amount-input" name="amount" step="0.01" min="0.01" required placeholder="e.g. 120.00" /></label>'+
-        '<div class="muted small">Available balance: '+fmtMoney(wallet.available)+'</div>'+
+        '<div class="amount-row">'+
+          '<label style="flex:0 0 100px;">Currency<select id="claim-currency-input" name="currency">'+renderCurrencyOptions('SGD')+'</select></label>'+
+          '<label style="flex:1;">Amount to Claim<input type="number" id="claim-amount-input" name="amount" step="0.01" min="0.01" required placeholder="e.g. 120.00" /></label>'+
+        '</div>'+
+        '<div id="claim-amount-preview" class="tiny muted"></div>'+
+        '<div class="muted small">Available balance: '+fmtMoney(wallet.available)+' (SGD)</div>'+
         '<div id="claim-amount-live-error" class="field-error" style="display:none;"></div>'+
         '<label>Date of Receipt<input type="date" name="receiptDate" required max="'+todayStr()+'" /></label>'+
         '<label>Upload Receipt (photo or PDF, max 4MB)<input type="file" name="receipt" accept="image/*,.pdf" required /></label>'+
@@ -464,7 +502,7 @@
         (showEmployee ? '<td>'+escapeHtml(employeeName(c.employee_id))+'</td>' : '')+
         '<td>'+escapeHtml(c.category)+'</td>'+
         '<td>'+escapeHtml(c.vendor||'-')+'</td>'+
-        '<td>'+fmtMoney(c.amount)+'</td>'+
+        '<td>'+fmtCurrencyAmount(c.currency, c.amount)+((c.currency && c.currency!=='SGD') ? '<div class="tiny muted">\u2248 '+fmtMoney(sgdAmountOf(c))+' SGD</div>' : '')+'</td>'+
         '<td>'+fmtDate(c.receipt_date)+'</td>'+
         '<td><span class="status-pill status-'+c.status+'">'+c.status+'</span>'+
           (c.status==='rejected' && c.reject_reason ? '<div class="tiny muted">'+escapeHtml(c.reject_reason)+'</div>' : '')+
@@ -514,9 +552,11 @@
 
   function renderRejectPanel(c){
     return '<div class="reject-panel">'+
-      '<label>Rejection Reason<select data-field="reject-reason-'+c.id+'"><option value="">Select a reason...</option>'+
+      '<label>Rejection Reason<select data-field="reject-reason-'+c.id+'" data-action="reject-reason-select" data-id="'+c.id+'"><option value="">Select a reason...</option>'+
         STATE.rejectReasons.map(function(r){ return '<option value="'+escapeHtml(r)+'">'+escapeHtml(r)+'</option>'; }).join('')+
+        '<option value="Others">Others (please specify)</option>'+
       '</select></label>'+
+      '<label id="reject-other-wrap-'+c.id+'" style="display:none;">Please Specify<input type="text" data-field="reject-other-'+c.id+'" placeholder="Type the reason..." /></label>'+
       '<label>Additional Note (optional)<input type="text" data-field="reject-note-'+c.id+'" placeholder="Add more detail..." /></label>'+
       '<div class="reject-actions">'+
         '<button class="btn btn-sm btn-danger" data-action="confirm-reject" data-id="'+c.id+'">Confirm Reject</button>'+
@@ -531,7 +571,9 @@
       '</select></label>'+
       '<label>Vendor / Merchant<input type="text" id="edit-vendor-'+c.id+'" list="vendor-options-'+c.id+'" value="'+escapeHtml(c.vendor||'')+'" autocomplete="off"/></label>'+
       renderVendorDatalist('vendor-options-'+c.id)+
+      '<label>Currency<select id="edit-currency-'+c.id+'">'+renderCurrencyOptions(c.currency)+'</select></label>'+
       '<label>Amount<input type="number" id="edit-amount-'+c.id+'" step="0.01" min="0.01" value="'+c.amount+'"/></label>'+
+      '<div id="edit-amount-preview-'+c.id+'" class="tiny muted"></div>'+
       '<div id="edit-amount-live-error-'+c.id+'" class="field-error" style="display:none;"></div>'+
       '<label>Receipt Date<input type="date" id="edit-date-'+c.id+'" value="'+c.receipt_date+'" max="'+todayStr()+'"/></label>'+
       '<label>Replace Receipt (optional)<input type="file" id="edit-receipt-'+c.id+'" accept="image/*,.pdf"/></label>'+
@@ -808,28 +850,35 @@
   function submitClaim(form){
     var category = form.category.value;
     var vendor = form.vendor.value.trim();
+    var currency = form.currency.value || 'SGD';
     var amount = parseFloat(form.amount.value);
     var receiptDate = form.receiptDate.value;
     var file = form.receipt.files[0];
     if(!category || !vendor || !amount || amount<=0 || !receiptDate || !file){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
     if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return Promise.resolve(); }
 
-    var wallet = computeWallet(STATE.profile.id);
-    if(amount > wallet.available){
-      STATE.claimFormError = 'You can only claim up to '+fmtMoney(wallet.available)+' based on your available Flex wallet balance.';
-      render();
-      return Promise.resolve();
-    }
-    STATE.claimFormError = null;
-
     var btn = form.querySelector('button[type=submit]');
-    btn.disabled = true; btn.textContent = 'Uploading...';
-    return uploadReceipt(file).then(function(receipt){
-      return supabase.from('claims').insert({
-        employee_id: STATE.session.user.id, category:category, vendor:vendor, amount:amount,
-        receipt_date:receiptDate, receipt_path:receipt.path, receipt_name:receipt.name, status:'pending'
+    btn.disabled = true; btn.textContent = 'Checking exchange rate...';
+
+    return getExchangeRateToSGD(currency).then(function(rate){
+      var amountSgd = Math.round(amount*rate*100)/100;
+      var wallet = computeWallet(STATE.profile.id);
+      if(amountSgd > wallet.available){
+        STATE.claimFormError = 'This comes to '+fmtMoney(amountSgd)+' SGD, which is more than your available balance of '+fmtMoney(wallet.available)+'.';
+        render();
+        return null;
+      }
+      STATE.claimFormError = null;
+      btn.textContent = 'Uploading...';
+      return uploadReceipt(file).then(function(receipt){
+        return supabase.from('claims').insert({
+          employee_id: STATE.session.user.id, category:category, vendor:vendor,
+          amount:amount, currency:currency, amount_sgd:amountSgd, exchange_rate:rate,
+          receipt_date:receiptDate, receipt_path:receipt.path, receipt_name:receipt.name, status:'pending'
+        });
       });
     }).then(function(res){
+      if(res===null) return;
       if(res.error) throw res.error;
       showToast('Claim submitted successfully and is pending review.', 'success');
       STATE.activeTab = 'history';
@@ -852,8 +901,14 @@
   function confirmReject(id){
     var reasonSel = document.querySelector('[data-field="reject-reason-'+id+'"]');
     var noteInput = document.querySelector('[data-field="reject-note-'+id+'"]');
+    var otherInput = document.querySelector('[data-field="reject-other-'+id+'"]');
     var reason = reasonSel ? reasonSel.value : '';
     if(!reason){ showToast('Please select a rejection reason.', 'error'); return Promise.resolve(); }
+    if(reason==='Others'){
+      var customReason = otherInput ? otherInput.value.trim() : '';
+      if(!customReason){ showToast('Please specify a reason.', 'error'); return Promise.resolve(); }
+      reason = customReason;
+    }
     var note = noteInput ? noteInput.value.trim() : '';
     return supabase.from('claims').update({status:'rejected', reject_reason:reason, admin_note:note, decided_at:new Date().toISOString()}).eq('id', id).then(function(res){
       if(res.error){ showToast('Could not reject claim: '+res.error.message, 'error'); return; }
@@ -878,47 +933,55 @@
 
     var catSel = document.getElementById('edit-category-'+id);
     var vendorInput = document.getElementById('edit-vendor-'+id);
+    var currencySel = document.getElementById('edit-currency-'+id);
     var amtInput = document.getElementById('edit-amount-'+id);
     var dateInput = document.getElementById('edit-date-'+id);
     var fileInput = document.getElementById('edit-receipt-'+id);
     var category = catSel ? catSel.value : claim.category;
     var vendor = vendorInput ? vendorInput.value.trim() : claim.vendor;
+    var currency = currencySel ? currencySel.value : (claim.currency||'SGD');
     var amount = amtInput ? parseFloat(amtInput.value) : claim.amount;
     var receiptDate = dateInput ? dateInput.value : claim.receipt_date;
     if(!category || !vendor || !amount || amount<=0 || !receiptDate){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
 
-    var wallet = computeWallet(STATE.profile.id);
-    var availableForThisEdit = claim.status==='pending' ? wallet.available + Number(claim.amount) : wallet.available;
-    if(amount > availableForThisEdit){
-      STATE.claimFormError = 'You can only claim up to '+fmtMoney(availableForThisEdit)+' based on your available Flex wallet balance.';
-      render();
-      return Promise.resolve();
-    }
-    STATE.claimFormError = null;
-
     var file = fileInput && fileInput.files && fileInput.files[0];
     var wasRejected = claim.status === 'rejected';
 
-    var updates = {category:category, vendor:vendor, amount:amount, receipt_date:receiptDate, last_edited_at:new Date().toISOString()};
-    if(wasRejected){ updates.status='pending'; updates.reject_reason=null; updates.admin_note=null; updates.decided_at=null; }
+    return getExchangeRateToSGD(currency).then(function(rate){
+      var amountSgd = Math.round(amount*rate*100)/100;
+      var wallet = computeWallet(STATE.profile.id);
+      var availableForThisEdit = claim.status==='pending' ? wallet.available + sgdAmountOf(claim) : wallet.available;
+      if(amountSgd > availableForThisEdit){
+        STATE.claimFormError = 'This comes to '+fmtMoney(amountSgd)+' SGD, which is more than your available balance of '+fmtMoney(availableForThisEdit)+'.';
+        render();
+        return null;
+      }
+      STATE.claimFormError = null;
 
-    function applyUpdate(){
-      return supabase.from('claims').update(updates).eq('id', id).then(function(res){
-        if(res.error){ showToast('Could not save changes: '+res.error.message, 'error'); return; }
-        STATE.editingClaimId = null;
-        showToast(wasRejected ? 'Claim updated and resubmitted for review.' : 'Claim updated.', 'success');
-        return loadAppData();
-      }).then(function(){ render(); });
-    }
+      var updates = {category:category, vendor:vendor, currency:currency, amount:amount, amount_sgd:amountSgd, exchange_rate:rate, receipt_date:receiptDate, last_edited_at:new Date().toISOString()};
+      if(wasRejected){ updates.status='pending'; updates.reject_reason=null; updates.admin_note=null; updates.decided_at=null; }
 
-    if(file){
-      if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return Promise.resolve(); }
-      return uploadReceipt(file).then(function(receipt){
-        updates.receipt_path = receipt.path; updates.receipt_name = receipt.name;
-        return applyUpdate();
-      }).catch(function(err){ showToast('Upload failed: '+(err.message||err), 'error'); });
-    }
-    return applyUpdate();
+      function applyUpdate(){
+        return supabase.from('claims').update(updates).eq('id', id).then(function(res){
+          if(res.error){ showToast('Could not save changes: '+res.error.message, 'error'); return; }
+          STATE.editingClaimId = null;
+          showToast(wasRejected ? 'Claim updated and resubmitted for review.' : 'Claim updated.', 'success');
+          return loadAppData();
+        }).then(function(){ render(); });
+      }
+
+      if(file){
+        if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return null; }
+        return uploadReceipt(file).then(function(receipt){
+          updates.receipt_path = receipt.path; updates.receipt_name = receipt.name;
+          return applyUpdate();
+        }).catch(function(err){ showToast('Upload failed: '+(err.message||err), 'error'); });
+      }
+      return applyUpdate();
+    }).catch(function(err){
+      console.error(err);
+      showToast('Could not fetch the exchange rate - try again or switch to SGD.', 'error');
+    });
   }
 
   function deleteClaimConfirmed(id){
@@ -1098,33 +1161,70 @@
     return Promise.resolve();
   }
 
+  function toggleOtherReasonField(selectEl){
+    var id = selectEl.dataset.id;
+    var wrap = document.getElementById('reject-other-wrap-'+id);
+    if(!wrap) return;
+    wrap.style.display = (selectEl.value === 'Others') ? '' : 'none';
+  }
+
   function handleChange(e){
     var target = e.target;
     if(target.id==='staff-csv-input'){
       var f = target.files[0]; target.value='';
       return handleStaffCsv(f);
     }
+    if(target.id==='claim-currency-input' || (target.id && target.id.indexOf('edit-currency-')===0)){
+      handleAmountRelatedChange(target);
+      return Promise.resolve();
+    }
     var action = target.dataset.action;
     if(!action) return Promise.resolve();
     switch(action){
       case 'change-role': return changeRole(target.dataset.id, target.value);
+      case 'reject-reason-select': toggleOtherReasonField(target); return Promise.resolve();
       case 'set-report-month': STATE.reportMonth = parseInt(target.value,10); render(); return Promise.resolve();
       case 'set-report-year': STATE.reportYear = parseInt(target.value,10); render(); return Promise.resolve();
       default: return Promise.resolve();
     }
   }
 
-  function liveCheckAmount(input, available, errorId){
-    var el = document.getElementById(errorId);
-    if(!el) return;
-    var val = parseFloat(input.value);
-    if(!isNaN(val) && val > available){
-      el.textContent = 'You can only claim up to '+fmtMoney(available)+' based on your available Flex wallet balance.';
-      el.style.display = '';
-    } else {
-      el.textContent = '';
-      el.style.display = 'none';
-    }
+  var liveCheckTimers = {};
+  var liveCheckGeneration = {};
+
+  function scheduleLiveAmountCheck(amountInput, currencySelect, available, errorId, previewId){
+    clearTimeout(liveCheckTimers[errorId]);
+    liveCheckTimers[errorId] = setTimeout(function(){
+      var myGen = (liveCheckGeneration[errorId] = (liveCheckGeneration[errorId]||0) + 1);
+      var currency = currencySelect ? currencySelect.value : 'SGD';
+      var rawAmount = parseFloat(amountInput.value);
+      var previewEl = previewId ? document.getElementById(previewId) : null;
+      var errorEl = document.getElementById(errorId);
+      if(isNaN(rawAmount) || rawAmount<=0){
+        if(errorEl){ errorEl.textContent=''; errorEl.style.display='none'; }
+        if(previewEl) previewEl.textContent = '';
+        return;
+      }
+      getExchangeRateToSGD(currency).then(function(rate){
+        if(liveCheckGeneration[errorId] !== myGen) return;
+        var sgdAmount = Math.round(rawAmount*rate*100)/100;
+        if(previewEl){
+          previewEl.textContent = currency!=='SGD' ? ('\u2248 '+fmtMoney(sgdAmount)+' SGD at today\'s rate') : '';
+        }
+        if(errorEl){
+          if(sgdAmount > available){
+            errorEl.textContent = 'This comes to '+fmtMoney(sgdAmount)+' SGD, which is more than your available balance of '+fmtMoney(available)+'.';
+            errorEl.style.display = '';
+          } else {
+            errorEl.textContent=''; errorEl.style.display='none';
+          }
+        }
+      }).catch(function(){
+        if(liveCheckGeneration[errorId] !== myGen) return;
+        if(errorEl){ errorEl.textContent = 'Could not fetch the exchange rate - try again or switch to SGD.'; errorEl.style.display=''; }
+        if(previewEl) previewEl.textContent = '';
+      });
+    }, 350);
   }
 
   function handleInput(e){
@@ -1132,15 +1232,28 @@
     if(!STATE.profile) return;
     if(t.id==='claim-amount-input'){
       var wallet = computeWallet(STATE.profile.id);
-      liveCheckAmount(t, wallet.available, 'claim-amount-live-error');
+      var currencySel = document.getElementById('claim-currency-input');
+      scheduleLiveAmountCheck(t, currencySel, wallet.available, 'claim-amount-live-error', 'claim-amount-preview');
     } else if(t.id && t.id.indexOf('edit-amount-')===0){
       var claimId = t.id.slice('edit-amount-'.length);
       var claim = STATE.claims.filter(function(c){ return c.id===claimId; })[0];
       if(claim){
         var w = computeWallet(STATE.profile.id);
-        var availableForEdit = claim.status==='pending' ? w.available + Number(claim.amount) : w.available;
-        liveCheckAmount(t, availableForEdit, 'edit-amount-live-error-'+claimId);
+        var availableForEdit = claim.status==='pending' ? w.available + sgdAmountOf(claim) : w.available;
+        var editCurrencySel = document.getElementById('edit-currency-'+claimId);
+        scheduleLiveAmountCheck(t, editCurrencySel, availableForEdit, 'edit-amount-live-error-'+claimId, 'edit-amount-preview-'+claimId);
       }
+    }
+  }
+
+  function handleAmountRelatedChange(target){
+    if(target.id==='claim-currency-input'){
+      var amtInput = document.getElementById('claim-amount-input');
+      if(amtInput && amtInput.value){ handleInput({target:amtInput}); }
+    } else if(target.id && target.id.indexOf('edit-currency-')===0){
+      var claimId = target.id.slice('edit-currency-'.length);
+      var amtEl = document.getElementById('edit-amount-'+claimId);
+      if(amtEl && amtEl.value){ handleInput({target:amtEl}); }
     }
   }
 
