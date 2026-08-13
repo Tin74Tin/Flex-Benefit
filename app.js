@@ -40,6 +40,8 @@
     confirmRevokeInvite: null,
     staffRoleFilter: 'all',
     historyFilter: 'all',
+    historySearchQuery: '',
+    allSubmissionsSearchQuery: '',
     reportMonth: null, reportYear: null,
     _realtimeSubscribed: false
   };
@@ -68,6 +70,15 @@
   function fmtCurrencyAmount(currency, amount){
     var n = Number(amount)||0;
     return (currency||'SGD')+' '+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+
+  function claimMatchesSearch(c, query, includeEmployee){
+    if(!query) return true;
+    var q = query.trim().toLowerCase();
+    if(!q) return true;
+    var haystack = [c.category, c.vendor, c.status, c.currency].filter(Boolean).join(' ').toLowerCase();
+    if(includeEmployee){ haystack += ' ' + employeeName(c.employee_id).toLowerCase(); }
+    return haystack.indexOf(q) !== -1;
   }
 
   var EXCHANGE_RATE_CACHE = {};
@@ -511,10 +522,13 @@
     var claims = STATE.claims.slice();
     var filter = STATE.historyFilter||'all';
     if(filter!=='all') claims = claims.filter(function(c){ return c.status===filter; });
+    var searchQuery = STATE.historySearchQuery||'';
+    claims = claims.filter(function(c){ return claimMatchesSearch(c, searchQuery, false); });
     claims.sort(function(a,b){ return b.submitted_at.localeCompare(a.submitted_at); });
     var filters = ['all','pending','approved','rejected'];
     return '<div class="card">'+cardTitleWithClose('Transaction History')+
       '<div class="muted small" style="margin-bottom:12px;">Pending and rejected claims can be edited or deleted. Approved claims are locked.</div>'+
+      '<input type="text" id="history-search-input" class="search-input" placeholder="Search by category, vendor, currency or status..." value="'+escapeHtml(searchQuery)+'" style="margin-bottom:12px;" />'+
       '<div class="filter-row">'+filters.map(function(f){ return '<button class="chip-filter '+(filter===f?'active':'')+'" data-action="filter-history" data-filter="'+f+'">'+(f.charAt(0).toUpperCase()+f.slice(1))+'</button>'; }).join('')+'</div>'+
       renderClaimsTable(claims,false,false,true)+
     '</div>';
@@ -664,8 +678,11 @@
   }
 
   function renderAdminAllSubmissions(){
-    var claims = STATE.claims.slice().sort(function(a,b){ return b.submitted_at.localeCompare(a.submitted_at); });
-    return '<div class="card"><div class="card-title">All Submissions</div>'+renderClaimsTable(claims,true,false,false)+'</div>';
+    var searchQuery = STATE.allSubmissionsSearchQuery||'';
+    var claims = STATE.claims.filter(function(c){ return claimMatchesSearch(c, searchQuery, true); }).slice().sort(function(a,b){ return b.submitted_at.localeCompare(a.submitted_at); });
+    return '<div class="card"><div class="card-title">All Submissions</div>'+
+      '<input type="text" id="all-submissions-search-input" class="search-input" placeholder="Search by employee, category, vendor, currency or status..." value="'+escapeHtml(searchQuery)+'" style="margin-bottom:12px;" />'+
+      renderClaimsTable(claims,true,false,false)+'</div>';
   }
 
   function renderAdminStaff(){
@@ -899,10 +916,17 @@
     var emailInput = document.querySelector('form[data-form="login"] input[name="email"]');
     var email = emailInput ? emailInput.value.trim() : '';
     if(!email){ showToast('Enter your email above first, then click "Forgot password?".', 'error'); return Promise.resolve(); }
+    var btn = document.querySelector('[data-action="forgot-password"]');
+    var originalLabel = btn ? btn.textContent : '';
+    if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
     var redirectTo = window.location.origin + window.location.pathname;
     return supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}).then(function(res){
       if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
       showToast('Password reset email sent - check your inbox.', 'success');
+    }).catch(function(err){
+      showToast('Could not send reset email: '+((err && err.message) || err), 'error');
+    }).then(function(){
+      if(btn){ btn.disabled = false; btn.textContent = originalLabel || 'Forgot password?'; }
     });
   }
 
@@ -1334,6 +1358,23 @@
     }, 350);
   }
 
+  var searchDebounceTimers = {};
+  function scheduleSearchFilter(inputEl, stateKey){
+    var value = inputEl.value;
+    var cursorPos = inputEl.selectionStart;
+    var inputId = inputEl.id;
+    clearTimeout(searchDebounceTimers[inputId]);
+    searchDebounceTimers[inputId] = setTimeout(function(){
+      STATE[stateKey] = value;
+      render();
+      var freshInput = document.getElementById(inputId);
+      if(freshInput){
+        freshInput.focus();
+        try{ freshInput.setSelectionRange(cursorPos, cursorPos); }catch(err){}
+      }
+    }, 250);
+  }
+
   function handleInput(e){
     var t = e.target;
     if(!STATE.profile) return;
@@ -1350,6 +1391,10 @@
         var editCurrencySel = document.getElementById('edit-currency-'+claimId);
         scheduleLiveAmountCheck(t, editCurrencySel, availableForEdit, 'edit-amount-live-error-'+claimId, 'edit-amount-preview-'+claimId);
       }
+    } else if(t.id==='history-search-input'){
+      scheduleSearchFilter(t, 'historySearchQuery');
+    } else if(t.id==='all-submissions-search-input'){
+      scheduleSearchFilter(t, 'allSubmissionsSearchQuery');
     }
   }
 
