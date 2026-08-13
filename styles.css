@@ -94,6 +94,7 @@
 
   /* ---------- Forms ---------- */
   .claim-form, .inline-form{display:flex;flex-direction:column;gap:14px;max-width:460px;}
+  .amount-row{display:flex;gap:10px;}
   .inline-form{flex-direction:row;flex-wrap:wrap;align-items:flex-end;max-width:none;}
   .inline-form input, .inline-form select{padding:9px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);}
   .claim-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted);}
