@@ -436,6 +436,7 @@
         navTab('history','Transaction History')+
         navTab('notifications','Notifications'+(unread?' <span class="badge">'+unread+'</span>':''))+
         '<button class="tab tab-cta" data-action="buy-pa">BUY PA NOW</button>'+
+        '<button class="tab tab-cta" data-action="buy-travel-insurance">Buy Travel Insurance Now</button>'+
       '</div>'+
       '<div class="content">'+
         (STATE.activeTab==='claim' ? renderClaimForm() :
@@ -1151,6 +1152,7 @@
       case 'nav': STATE.activeTab = btn.dataset.tab; STATE.claimFormError=null; render(); return Promise.resolve();
       case 'logout': return supabase.auth.signOut();
       case 'buy-pa': window.open('https://insure.aia.com.sg/aianow3/solitaire?f=43519&i=agy', '_blank', 'noopener,noreferrer'); return Promise.resolve();
+      case 'buy-travel-insurance': window.open('https://sg-customer.qbe.com/travel/partner/01000960', '_blank', 'noopener,noreferrer'); return Promise.resolve();
       case 'view-receipt': openReceiptModal(id); return Promise.resolve();
       case 'close-modal': STATE.modal=null; render(); return Promise.resolve();
       case 'approve-claim': return approveClaim(id);
