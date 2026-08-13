@@ -83,6 +83,28 @@
 
   var EXCHANGE_RATE_CACHE = {};
   var EXCHANGE_RATE_CACHE_MS = 60*60*1000;
+  function withTimeout(promise, ms, label){
+    return new Promise(function(resolve, reject){
+      var settled = false;
+      var timer = setTimeout(function(){
+        if(settled) return;
+        settled = true;
+        reject(new Error((label||'Request')+' timed out after '+ms+'ms - the server may be slow or unreachable.'));
+      }, ms);
+      promise.then(function(v){
+        if(settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(v);
+      }, function(err){
+        if(settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
   function fetchRateFrankfurter(currency){
     return fetch('https://api.frankfurter.app/latest?from='+encodeURIComponent(currency)+'&to=SGD')
       .then(function(res){ if(!res.ok) throw new Error('Frankfurter returned '+res.status); return res.json(); })
@@ -920,7 +942,7 @@
     var originalLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
     var redirectTo = window.location.origin + window.location.pathname;
-    return supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}).then(function(res){
+    return withTimeout(supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}), 8000, 'Password reset request').then(function(res){
       if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
       showToast('Password reset email sent - check your inbox.', 'success');
     }).catch(function(err){
