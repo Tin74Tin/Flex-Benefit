@@ -753,13 +753,13 @@
       '<form data-form="invite-staff" class="inline-form">'+
         '<label class="mini-field">Full Name<input type="text" name="name" placeholder="e.g. Jane Lim" required /></label>'+
         '<label class="mini-field">Work Email<input type="email" name="email" placeholder="jane@company.com" required /></label>'+
-        '<label class="mini-field">Annual Allocation<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" /></label>'+
-        '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" /></label>'+
-        '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" /></label>'+
-        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" style="width:160px" /></label>'+
+        '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" required /></label>'+
+        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" style="width:160px" required /></label>'+
+        '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" required /></label>'+
+        '<label class="mini-field">Entitlement (SGD)<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" required /></label>'+
         '<button type="submit" class="btn btn-primary">Add Employee</button>'+
       '</form>'+
-      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. If Effective Date is set, a welcome email with sign-up instructions is sent automatically once that date arrives.</div>'+
+      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. A welcome email with sign-up instructions is sent automatically once the Effective Date arrives.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Bulk Invite (CSV)</div>'+
       '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation,dateOfEmployment,paynowMobile,effectiveDate. First row is treated as a header and skipped. The last three columns are optional.</div>'+
@@ -1153,11 +1153,15 @@
   function inviteStaff(form){
     var name = form.name.value.trim();
     var email = form.email.value.trim().toLowerCase();
-    var alloc = parseFloat(form.annualAllocation.value) || 0;
-    var dateOfEmployment = form.dateOfEmployment.value || null;
-    var paynowMobile = form.paynowMobile.value.trim() || null;
-    var effectiveDate = form.effectiveDate.value || null;
-    if(!name || !email){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
+    var dateOfEmployment = form.dateOfEmployment.value;
+    var effectiveDate = form.effectiveDate.value;
+    var paynowMobile = form.paynowMobile.value.trim();
+    var allocRaw = form.annualAllocation.value;
+    var alloc = parseFloat(allocRaw);
+    if(!name || !email || !dateOfEmployment || !effectiveDate || !paynowMobile || allocRaw==='' || isNaN(alloc)){
+      showToast('Please complete all fields before adding the employee.', 'error');
+      return Promise.resolve();
+    }
     return supabase.from('invites').upsert(
       {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false},
       {onConflict:'email'}
