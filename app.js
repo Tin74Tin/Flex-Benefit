@@ -36,6 +36,7 @@
     claimFormError: null,
     editingAllocId: null,
     confirmDeactivateId: null,
+    confirmDeleteProfileId: null,
     confirmRevokeInvite: null,
     staffRoleFilter: 'all',
     historyFilter: 'all',
@@ -674,13 +675,20 @@
       var allocCell = STATE.editingAllocId===p.id
         ? '<input type="number" min="0" step="1" style="width:90px" id="alloc-input-'+p.id+'" value="'+p.annual_allocation+'"/> <button class="btn btn-sm btn-primary" data-action="save-alloc" data-id="'+p.id+'">Save</button>'
         : fmtMoney(p.annual_allocation)+' <button class="link-btn" data-action="edit-alloc" data-id="'+p.id+'">Edit</button>';
-      var actionsCell = STATE.confirmDeactivateId===p.id
-        ? '<button class="btn btn-sm btn-danger" data-action="toggle-active-confirm" data-id="'+p.id+'">Confirm?</button> <button class="btn btn-sm btn-ghost" data-action="toggle-active-cancel" data-id="'+p.id+'">Cancel</button>'
-        : '<button class="btn btn-sm btn-ghost" data-action="toggle-active" data-id="'+p.id+'">'+(p.active?'Deactivate':'Activate')+'</button>';
+      var actionsCell;
+      if(STATE.confirmDeactivateId===p.id){
+        actionsCell = '<button class="btn btn-sm btn-danger" data-action="toggle-active-confirm" data-id="'+p.id+'">Confirm?</button> <button class="btn btn-sm btn-ghost" data-action="toggle-active-cancel" data-id="'+p.id+'">Cancel</button>';
+      } else if(STATE.confirmDeleteProfileId===p.id){
+        actionsCell = '<button class="btn btn-sm btn-danger" data-action="delete-profile-confirm" data-id="'+p.id+'">Confirm Delete?</button> <button class="btn btn-sm btn-ghost" data-action="delete-profile-cancel" data-id="'+p.id+'">Cancel</button>';
+      } else {
+        actionsCell = '<button class="btn btn-sm btn-ghost" data-action="toggle-active" data-id="'+p.id+'">'+(p.active?'Deactivate':'Activate')+'</button> '+
+          '<button class="btn btn-sm btn-danger" data-action="delete-profile" data-id="'+p.id+'">Delete</button>';
+      }
       var roleLabel = p.role==='admin' ? 'Admin' : 'User';
       return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+escapeHtml(p.email)+'</td>'+
         '<td><span class="role-chip">'+roleLabel+'</span></td>'+
         '<td>'+allocCell+'</td>'+
+        '<td>'+fmtDate(p.date_of_joining)+'</td>'+
         '<td><span class="status-pill '+(p.active?'status-approved':'status-rejected')+'">'+(p.active?'Active':'Inactive')+'</span></td>'+
         '<td class="actions-cell">'+actionsCell+'</td></tr>';
     }).join('');
@@ -697,27 +705,33 @@
     }).join('');
 
     return ''+
-    '<div class="card"><div class="card-title">Invite Employee</div>'+
+    '<div class="card"><div class="card-title">Add Employee</div>'+
       '<form data-form="invite-staff" class="inline-form">'+
         '<label class="mini-field">Full Name<input type="text" name="name" placeholder="e.g. Jane Lim" required /></label>'+
         '<label class="mini-field">Work Email<input type="email" name="email" placeholder="jane@company.com" required /></label>'+
         '<label class="mini-field">Annual Allocation<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" /></label>'+
-        '<button type="submit" class="btn btn-primary">Send Invite</button>'+
+        '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" /></label>'+
+        '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" /></label>'+
+        '<button type="submit" class="btn btn-primary">Add Employee</button>'+
       '</form>'+
       '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Bulk Invite (CSV)</div>'+
-      '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation. First row is treated as a header and skipped.</div>'+
-      '<input type="file" id="staff-csv-input" accept=".csv" /></div>'+
+      '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation,dateOfEmployment,paynowMobile. First row is treated as a header and skipped. The last two columns are optional.</div>'+
+      '<div class="dropzone" id="staff-csv-dropzone">'+
+        '<input type="file" id="staff-csv-input" accept=".csv" />'+
+        '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
+      '</div>'+
+    '</div>'+
     (pendingInvites.length ? '<div class="card"><div class="card-title">Pending Invites</div><div class="table-wrap"><table class="data-table">'+
       '<thead><tr><th>Name</th><th>Email</th><th>Allocation</th><th>Invited</th><th>Actions</th></tr></thead>'+
       '<tbody>'+inviteRows+'</tbody></table></div></div>' : '')+
     '<div class="card"><div class="card-title">Employee Directory</div>'+
       '<div class="filter-row">'+staffFilters.map(function(f){ return '<button class="chip-filter '+(roleFilter===f.key?'active':'')+'" data-action="filter-staff" data-filter="'+f.key+'">'+f.label+'</button>'; }).join('')+'</div>'+
       '<div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Status</th><th>Actions</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Date of Joining</th><th>Status</th><th>Actions</th></tr></thead>'+
       '<tbody>'+staffRows+'</tbody></table></div>'+
-      '<div class="field-hint">Permanently deleting an account (not just deactivating it) requires the Supabase dashboard, since it needs elevated access this app intentionally doesn\'t have.</div>'+
+      '<div class="field-hint">Deleting an employee removes their account, all their claim history, and their notifications - permanently, and this cannot be undone. Their login itself still technically exists in Supabase until removed from the dashboard\'s Authentication &gt; Users page too, but they won\'t be able to do anything with it here once deleted.</div>'+
     '</div>';
   }
 
@@ -736,11 +750,13 @@
     var rows = STATE.profiles.map(function(p){
       return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+escapeHtml(p.email)+'</td>'+
         '<td><select data-action="change-role" data-id="'+p.id+'"><option value="user" '+(p.role==='user'?'selected':'')+'>User</option><option value="admin" '+(p.role==='admin'?'selected':'')+'>Admin</option></select></td>'+
+        '<td>'+fmtDate((p.created_at||'').slice(0,10))+'</td>'+
+        '<td>'+(!p.active && p.deactivated_at ? fmtDate((p.deactivated_at||'').slice(0,10)) : '-')+'</td>'+
         '<td><button class="btn btn-sm btn-ghost" data-action="toggle-active" data-id="'+p.id+'">'+(p.active?'Deactivate':'Activate')+'</button></td>'+
       '</tr>';
     }).join('');
     return '<div class="card"><div class="card-title">User Access Rights</div><div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Date Added</th><th>Date of Deactivation</th><th>Status</th></tr></thead>'+
       '<tbody>'+rows+'</tbody></table></div>'+
       '<div class="field-hint">Password resets are self-service - employees use "Forgot password?" on the login screen.</div></div>';
   }
@@ -1067,12 +1083,14 @@
     var name = form.name.value.trim();
     var email = form.email.value.trim().toLowerCase();
     var alloc = parseFloat(form.annualAllocation.value) || 0;
+    var dateOfEmployment = form.dateOfEmployment.value || null;
+    var paynowMobile = form.paynowMobile.value.trim() || null;
     if(!name || !email){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
     return supabase.from('invites').upsert(
-      {email:email, name:name, role:'user', annual_allocation:alloc, invited_by:STATE.session.user.id, used:false},
+      {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, invited_by:STATE.session.user.id, used:false},
       {onConflict:'email'}
     ).then(function(res){
-      if(res.error){ showToast('Could not send invite: '+res.error.message, 'error'); return; }
+      if(res.error){ showToast('Could not add employee: '+res.error.message, 'error'); return; }
       showToast('Invite created for '+email+'.', 'success');
       form.reset();
       return loadAppData();
@@ -1089,8 +1107,10 @@
         var parts = lines[i].split(',').map(function(p){ return p.trim(); });
         if(parts.length<2) continue;
         var name=parts[0], email=(parts[1]||'').toLowerCase(), alloc=parseFloat(parts[2])||1000;
+        var dateOfJoining = parts[3] && parts[3].length ? parts[3] : null;
+        var paynowMobile = parts[4] && parts[4].length ? parts[4] : null;
         if(!name || !email) continue;
-        rows.push({email:email, name:name, role:'user', annual_allocation:alloc, invited_by:STATE.session.user.id, used:false});
+        rows.push({email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, invited_by:STATE.session.user.id, used:false});
       }
       if(!rows.length){ showToast('No valid rows found in that CSV.', 'error'); return; }
       return supabase.from('invites').upsert(rows, {onConflict:'email'}).then(function(res){
@@ -1115,9 +1135,27 @@
     var p = profileById(id);
     if(!p) return Promise.resolve();
     if(p.id === STATE.profile.id){ showToast('You cannot deactivate your own account.', 'error'); render(); return Promise.resolve(); }
-    return supabase.from('profiles').update({active: !p.active}).eq('id', id).then(function(res){
+    var newActive = !p.active;
+    var updates = {active:newActive, deactivated_at: newActive ? null : new Date().toISOString()};
+    return supabase.from('profiles').update(updates).eq('id', id).then(function(res){
       if(res.error){ showToast('Could not update status: '+res.error.message, 'error'); return; }
-      showToast(p.name+(!p.active?' activated.':' deactivated.'), 'success');
+      showToast(p.name+(newActive?' activated.':' deactivated.'), 'success');
+      return loadAppData();
+    }).then(function(){ render(); });
+  }
+
+  function deletePermanently(id){
+    STATE.confirmDeleteProfileId = null;
+    var p = profileById(id);
+    if(!p){ render(); return Promise.resolve(); }
+    if(p.id === STATE.profile.id){ showToast('You cannot delete your own account.', 'error'); render(); return Promise.resolve(); }
+    if(p.role==='admin'){
+      var activeAdmins = STATE.profiles.filter(function(x){ return x.role==='admin' && x.active; }).length;
+      if(activeAdmins<=1){ showToast('At least one active admin is required.', 'error'); render(); return Promise.resolve(); }
+    }
+    return supabase.from('profiles').delete().eq('id', id).then(function(res){
+      if(res.error){ showToast('Could not delete: '+res.error.message, 'error'); return; }
+      showToast(p.name+' permanently deleted.', 'success');
       return loadAppData();
     }).then(function(){ render(); });
   }
@@ -1198,9 +1236,12 @@
       case 'delete-claim-confirm': return deleteClaimConfirmed(id);
       case 'edit-alloc': STATE.editingAllocId=id; render(); return Promise.resolve();
       case 'save-alloc': return saveAlloc(id);
-      case 'toggle-active': STATE.confirmDeactivateId=id; render(); return Promise.resolve();
+      case 'toggle-active': STATE.confirmDeactivateId=id; STATE.confirmDeleteProfileId=null; render(); return Promise.resolve();
       case 'toggle-active-cancel': STATE.confirmDeactivateId=null; render(); return Promise.resolve();
       case 'toggle-active-confirm': return toggleActiveConfirmed(id);
+      case 'delete-profile': STATE.confirmDeleteProfileId=id; STATE.confirmDeactivateId=null; render(); return Promise.resolve();
+      case 'delete-profile-cancel': STATE.confirmDeleteProfileId=null; render(); return Promise.resolve();
+      case 'delete-profile-confirm': return deletePermanently(id);
       case 'revoke-invite': STATE.confirmRevokeInvite=btn.dataset.email; render(); return Promise.resolve();
       case 'revoke-invite-cancel': STATE.confirmRevokeInvite=null; render(); return Promise.resolve();
       case 'revoke-invite-confirm': return revokeInviteConfirmed(btn.dataset.email);
