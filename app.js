@@ -146,6 +146,7 @@
   function fmtDateTime(iso){ if(!iso) return '-'; var dt=new Date(iso); if(isNaN(dt)) return iso; return dt.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
   function escapeHtml(str){ return String(str==null?'':str).replace(/[&<>"']/g, function(s){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]; }); }
   function todayStr(){ return new Date().toISOString().slice(0,10); }
+  function yearStartStr(){ return new Date().getFullYear()+'-01-01'; }
   function isImageName(name){ return /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(name||''); }
 
   function profileById(id){ return STATE.profiles.filter(function(p){ return p.id===id; })[0]; }
@@ -206,7 +207,10 @@
 
   function computeWallet(employeeId){
     var profile = profileById(employeeId) || {annual_allocation:0};
-    var empClaims = STATE.claims.filter(function(c){ return c.employee_id===employeeId; });
+    var currentYear = new Date().getFullYear();
+    var empClaims = STATE.claims.filter(function(c){
+      return c.employee_id===employeeId && new Date(c.receipt_date+'T00:00:00').getFullYear()===currentYear;
+    });
     var approvedTotal=0, pendingTotal=0;
     var byCategory = {};
     STATE.benefits.forEach(function(b){ byCategory[b] = {approved:0, pending:0}; });
@@ -219,7 +223,7 @@
     var allocation = Number(profile.annual_allocation)||0;
     var available = allocation - approvedTotal - pendingTotal;
     var utilizationPct = allocation>0 ? Math.min(100, (approvedTotal/allocation)*100) : 0;
-    return {allocation:allocation, approvedTotal:approvedTotal, pendingTotal:pendingTotal, available:available, utilizationPct:utilizationPct, byCategory:byCategory};
+    return {allocation:allocation, approvedTotal:approvedTotal, pendingTotal:pendingTotal, available:available, utilizationPct:utilizationPct, byCategory:byCategory, year:currentYear};
   }
 
   function buildMonthlyReport(claims, year, month){
@@ -499,7 +503,7 @@
     }).join('');
     return ''+
     '<div class="grid-cards">'+
-      '<div class="card stat"><div class="stat-label">Annual Allocation</div><div class="stat-value">'+fmtMoney(wallet.allocation)+'</div></div>'+
+      '<div class="card stat"><div class="stat-label">'+wallet.year+' Annual Allocation</div><div class="stat-value">'+fmtMoney(wallet.allocation)+'</div></div>'+
       '<div class="card stat"><div class="stat-label">Used (Approved)</div><div class="stat-value">'+fmtMoney(wallet.approvedTotal)+'</div></div>'+
       '<div class="card stat"><div class="stat-label">Pending Review</div><div class="stat-value">'+fmtMoney(wallet.pendingTotal)+'</div></div>'+
       '<div class="card stat highlight"><div class="stat-label">Available Balance</div><div class="stat-value">'+fmtMoney(wallet.available)+'</div></div>'+
@@ -528,7 +532,7 @@
         '<div id="claim-amount-preview" class="tiny muted"></div>'+
         '<div class="muted small">Available balance: '+fmtMoney(wallet.available)+' (SGD)</div>'+
         '<div id="claim-amount-live-error" class="field-error" style="display:none;"></div>'+
-        '<label>Date of Receipt<input type="date" name="receiptDate" required max="'+todayStr()+'" /></label>'+
+        '<label>Date of Receipt<input type="date" name="receiptDate" required min="'+yearStartStr()+'" max="'+todayStr()+'" /></label>'+
         '<label>Upload Receipt (photo or PDF, max 4MB)</label>'+
         '<div class="dropzone" id="claim-receipt-dropzone">'+
           '<input type="file" name="receipt" accept="image/*,.pdf" required />'+
@@ -655,7 +659,7 @@
       '<label>Amount<input type="number" id="edit-amount-'+c.id+'" step="0.01" min="0.01" value="'+c.amount+'"/></label>'+
       '<div id="edit-amount-preview-'+c.id+'" class="tiny muted"></div>'+
       '<div id="edit-amount-live-error-'+c.id+'" class="field-error" style="display:none;"></div>'+
-      '<label>Receipt Date<input type="date" id="edit-date-'+c.id+'" value="'+c.receipt_date+'" max="'+todayStr()+'"/></label>'+
+      '<label>Receipt Date<input type="date" id="edit-date-'+c.id+'" value="'+c.receipt_date+'" min="'+yearStartStr()+'" max="'+todayStr()+'"/></label>'+
       '<label>Replace Receipt (optional)</label>'+
       '<div class="dropzone" id="edit-receipt-dropzone-'+c.id+'">'+
         '<input type="file" id="edit-receipt-'+c.id+'" accept="image/*,.pdf"/>'+
@@ -737,6 +741,7 @@
     var inviteRows = pendingInvites.map(function(i){
       return '<tr><td>'+escapeHtml(i.name)+'</td><td>'+escapeHtml(i.email)+'</td><td>'+fmtMoney(i.annual_allocation)+'</td>'+
         '<td>'+fmtDateTime(i.created_at)+'</td>'+
+        '<td>'+(i.effective_date ? fmtDate(i.effective_date)+(i.welcome_email_sent?' <span class="tiny muted">(email sent)</span>':'') : '-')+'</td>'+
         '<td>'+(STATE.confirmRevokeInvite===i.email
           ? '<button class="btn btn-sm btn-danger" data-action="revoke-invite-confirm" data-email="'+escapeHtml(i.email)+'">Confirm?</button> <button class="btn btn-sm btn-ghost" data-action="revoke-invite-cancel">Cancel</button>'
           : '<button class="btn btn-sm btn-ghost" data-action="revoke-invite" data-email="'+escapeHtml(i.email)+'">Revoke</button>')+
@@ -751,19 +756,20 @@
         '<label class="mini-field">Annual Allocation<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" /></label>'+
         '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" /></label>'+
         '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" /></label>'+
+        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" style="width:160px" /></label>'+
         '<button type="submit" class="btn btn-primary">Add Employee</button>'+
       '</form>'+
-      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up.</div>'+
+      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. If Effective Date is set, a welcome email with sign-up instructions is sent automatically once that date arrives.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Bulk Invite (CSV)</div>'+
-      '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation,dateOfEmployment,paynowMobile. First row is treated as a header and skipped. The last two columns are optional.</div>'+
+      '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation,dateOfEmployment,paynowMobile,effectiveDate. First row is treated as a header and skipped. The last three columns are optional.</div>'+
       '<div class="dropzone" id="staff-csv-dropzone">'+
         '<input type="file" id="staff-csv-input" accept=".csv" />'+
         '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
       '</div>'+
     '</div>'+
     (pendingInvites.length ? '<div class="card"><div class="card-title">Pending Invites</div><div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Allocation</th><th>Invited</th><th>Actions</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Allocation</th><th>Invited</th><th>Effective Date</th><th>Actions</th></tr></thead>'+
       '<tbody>'+inviteRows+'</tbody></table></div></div>' : '')+
     '<div class="card"><div class="card-title">Employee Directory</div>'+
       '<div class="filter-row">'+staffFilters.map(function(f){ return '<button class="chip-filter '+(roleFilter===f.key?'active':'')+'" data-action="filter-staff" data-filter="'+f.key+'">'+f.label+'</button>'; }).join('')+'</div>'+
@@ -985,6 +991,14 @@
     if(!category || !vendor || !amount || amount<=0 || !receiptDate || !file){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
     if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return Promise.resolve(); }
 
+    var currentYear = new Date().getFullYear();
+    var receiptYear = new Date(receiptDate+'T00:00:00').getFullYear();
+    if(receiptYear !== currentYear){
+      STATE.claimFormError = 'The receipt date ('+fmtDate(receiptDate)+') is not valid for the current benefit year ('+currentYear+'). Only expenses incurred in '+currentYear+' can be claimed against this year\'s wallet.';
+      render();
+      return Promise.resolve();
+    }
+
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Checking exchange rate...';
 
@@ -1072,6 +1086,14 @@
     var receiptDate = dateInput ? dateInput.value : claim.receipt_date;
     if(!category || !vendor || !amount || amount<=0 || !receiptDate){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
 
+    var currentYear = new Date().getFullYear();
+    var receiptYear = new Date(receiptDate+'T00:00:00').getFullYear();
+    if(receiptYear !== currentYear){
+      STATE.claimFormError = 'The receipt date ('+fmtDate(receiptDate)+') is not valid for the current benefit year ('+currentYear+'). Only expenses incurred in '+currentYear+' can be claimed against this year\'s wallet.';
+      render();
+      return Promise.resolve();
+    }
+
     var file = fileInput && fileInput.files && fileInput.files[0];
     var wasRejected = claim.status === 'rejected';
 
@@ -1134,9 +1156,10 @@
     var alloc = parseFloat(form.annualAllocation.value) || 0;
     var dateOfEmployment = form.dateOfEmployment.value || null;
     var paynowMobile = form.paynowMobile.value.trim() || null;
+    var effectiveDate = form.effectiveDate.value || null;
     if(!name || !email){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
     return supabase.from('invites').upsert(
-      {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, invited_by:STATE.session.user.id, used:false},
+      {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false},
       {onConflict:'email'}
     ).then(function(res){
       if(res.error){ showToast('Could not add employee: '+res.error.message, 'error'); return; }
@@ -1158,8 +1181,9 @@
         var name=parts[0], email=(parts[1]||'').toLowerCase(), alloc=parseFloat(parts[2])||1000;
         var dateOfJoining = parts[3] && parts[3].length ? parts[3] : null;
         var paynowMobile = parts[4] && parts[4].length ? parts[4] : null;
+        var effectiveDate = parts[5] && parts[5].length ? parts[5] : null;
         if(!name || !email) continue;
-        rows.push({email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, invited_by:STATE.session.user.id, used:false});
+        rows.push({email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false});
       }
       if(!rows.length){ showToast('No valid rows found in that CSV.', 'error'); return; }
       return supabase.from('invites').upsert(rows, {onConflict:'email'}).then(function(res){
