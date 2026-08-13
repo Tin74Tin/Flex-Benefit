@@ -832,16 +832,20 @@
     var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
     var years = uniqueYearsFromClaims(STATE.claims, now.getFullYear());
     var searchQuery = (STATE.reportSearchQuery||'').trim().toLowerCase();
-    var empRows = STATE.profiles.filter(function(p){
-      return p.role==='user' && (!searchQuery || p.name.toLowerCase().indexOf(searchQuery)!==-1);
-    }).map(function(p){
+    var empRows = STATE.profiles.filter(function(p){ return p.role==='user'; }).map(function(p){
       var r = report.byEmployee[p.id]||{count:0,total:0,categories:{}};
       var pct = p.annual_allocation>0 ? (r.total/p.annual_allocation*100) : 0;
       var catKeys = Object.keys(r.categories||{});
-      var catBreakdown = catKeys.length
-        ? catKeys.map(function(cat){ return escapeHtml(cat)+': '+fmtMoney(r.categories[cat]); }).join(', ')
+      return {p:p, r:r, pct:pct, catKeys:catKeys};
+    }).filter(function(row){
+      if(!searchQuery) return true;
+      if(row.p.name.toLowerCase().indexOf(searchQuery)!==-1) return true;
+      return row.catKeys.some(function(cat){ return cat.toLowerCase().indexOf(searchQuery)!==-1; });
+    }).map(function(row){
+      var catBreakdown = row.catKeys.length
+        ? row.catKeys.map(function(cat){ return escapeHtml(cat)+': '+fmtMoney(row.r.categories[cat]); }).join(', ')
         : '-';
-      return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td>'+fmtMoney(p.annual_allocation)+'</td><td>'+pct.toFixed(1)+'%</td><td class="tiny">'+catBreakdown+'</td></tr>';
+      return '<tr><td>'+escapeHtml(row.p.name)+'</td><td>'+row.r.count+'</td><td>'+fmtMoney(row.r.total)+'</td><td>'+fmtMoney(row.p.annual_allocation)+'</td><td>'+row.pct.toFixed(1)+'%</td><td class="tiny">'+catBreakdown+'</td></tr>';
     }).join('');
     return ''+
     '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
@@ -853,7 +857,7 @@
       '<div class="report-summary">Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s).</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">By Employee</div>'+
-      '<input type="text" id="report-search-input" class="search-input" placeholder="Search by employee name..." value="'+escapeHtml(STATE.reportSearchQuery||'')+'" style="margin-bottom:12px;" />'+
+      '<input type="text" id="report-search-input" class="search-input" placeholder="Search by employee name or benefit category..." value="'+escapeHtml(STATE.reportSearchQuery||'')+'" style="margin-bottom:12px;" />'+
       '<div class="table-wrap"><table class="data-table">'+
       '<thead><tr><th>Employee</th><th># Claims</th><th>Amount Claimed</th><th>Entitlement (SGD)</th><th>Utilisation %</th><th>Category Breakdown</th></tr></thead><tbody>'+empRows+'</tbody></table></div>'+
     '</div>';
