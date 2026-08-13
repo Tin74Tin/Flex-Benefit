@@ -553,7 +553,7 @@
   function renderRejectPanel(c){
     return '<div class="reject-panel">'+
       '<label>Rejection Reason<select data-field="reject-reason-'+c.id+'" data-action="reject-reason-select" data-id="'+c.id+'"><option value="">Select a reason...</option>'+
-        STATE.rejectReasons.map(function(r){ return '<option value="'+escapeHtml(r)+'">'+escapeHtml(r)+'</option>'; }).join('')+
+        STATE.rejectReasons.filter(function(r){ return r!=='Others'; }).map(function(r){ return '<option value="'+escapeHtml(r)+'">'+escapeHtml(r)+'</option>'; }).join('')+
         '<option value="Others">Others (please specify)</option>'+
       '</select></label>'+
       '<label id="reject-other-wrap-'+c.id+'" style="display:none;">Please Specify<input type="text" data-field="reject-other-'+c.id+'" placeholder="Type the reason..." /></label>'+
