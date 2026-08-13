@@ -533,6 +533,7 @@
         '<div class="muted small">Available balance: '+fmtMoney(wallet.available)+' (SGD)</div>'+
         '<div id="claim-amount-live-error" class="field-error" style="display:none;"></div>'+
         '<label>Date of Receipt<input type="date" name="receiptDate" required min="'+yearStartStr()+'" max="'+todayStr()+'" /></label>'+
+        '<div class="field-hint">Only receipts from '+new Date().getFullYear()+' can be claimed - your benefits reset every 1 January.</div>'+
         '<label>Upload Receipt (photo or PDF, max 4MB)</label>'+
         '<div class="dropzone" id="claim-receipt-dropzone">'+
           '<input type="file" name="receipt" accept="image/*,.pdf" required />'+
@@ -660,6 +661,7 @@
       '<div id="edit-amount-preview-'+c.id+'" class="tiny muted"></div>'+
       '<div id="edit-amount-live-error-'+c.id+'" class="field-error" style="display:none;"></div>'+
       '<label>Receipt Date<input type="date" id="edit-date-'+c.id+'" value="'+c.receipt_date+'" min="'+yearStartStr()+'" max="'+todayStr()+'"/></label>'+
+      '<div class="field-hint">Only receipts from '+new Date().getFullYear()+' can be claimed - your benefits reset every 1 January.</div>'+
       '<label>Replace Receipt (optional)</label>'+
       '<div class="dropzone" id="edit-receipt-dropzone-'+c.id+'">'+
         '<input type="file" id="edit-receipt-'+c.id+'" accept="image/*,.pdf"/>'+
@@ -994,7 +996,7 @@
     var currentYear = new Date().getFullYear();
     var receiptYear = new Date(receiptDate+'T00:00:00').getFullYear();
     if(receiptYear !== currentYear){
-      STATE.claimFormError = 'The receipt date ('+fmtDate(receiptDate)+') is not valid for the current benefit year ('+currentYear+'). Only expenses incurred in '+currentYear+' can be claimed against this year\'s wallet.';
+      STATE.claimFormError = 'This receipt is dated '+fmtDate(receiptDate)+', which is not from '+currentYear+'. Only '+currentYear+' receipts can be claimed - your benefits reset every 1 January.';
       render();
       return Promise.resolve();
     }
@@ -1089,7 +1091,7 @@
     var currentYear = new Date().getFullYear();
     var receiptYear = new Date(receiptDate+'T00:00:00').getFullYear();
     if(receiptYear !== currentYear){
-      STATE.claimFormError = 'The receipt date ('+fmtDate(receiptDate)+') is not valid for the current benefit year ('+currentYear+'). Only expenses incurred in '+currentYear+' can be claimed against this year\'s wallet.';
+      STATE.claimFormError = 'This receipt is dated '+fmtDate(receiptDate)+', which is not from '+currentYear+'. Only '+currentYear+' receipts can be claimed - your benefits reset every 1 January.';
       render();
       return Promise.resolve();
     }
