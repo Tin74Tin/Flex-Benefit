@@ -860,7 +860,8 @@
     if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Creating account...';
-    return supabase.auth.signUp({email:email, password:password}).then(function(res){
+    var redirectTo = window.location.origin + window.location.pathname;
+    return supabase.auth.signUp({email:email, password:password, options:{emailRedirectTo:redirectTo}}).then(function(res){
       if(res.error){
         var msg = res.error.message || '';
         if(/already registered|already exists|already been registered/i.test(msg)){
@@ -898,7 +899,8 @@
     var emailInput = document.querySelector('form[data-form="login"] input[name="email"]');
     var email = emailInput ? emailInput.value.trim() : '';
     if(!email){ showToast('Enter your email above first, then click "Forgot password?".', 'error'); return Promise.resolve(); }
-    return supabase.auth.resetPasswordForEmail(email).then(function(res){
+    var redirectTo = window.location.origin + window.location.pathname;
+    return supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}).then(function(res){
       if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
       showToast('Password reset email sent - check your inbox.', 'success');
     });
