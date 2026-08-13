@@ -360,8 +360,8 @@
   function renderModal(){
     if(!STATE.modal) return '';
     var m = STATE.modal;
-    return '<div class="modal-overlay" data-action="close-modal">'+
-      '<div class="modal-box" onclick="event.stopPropagation()">'+
+    return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
+      '<div class="modal-box">'+
         '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
         '<div class="modal-body">'+
           (m.isImage ? '<img src="'+m.src+'" class="modal-img" alt="Receipt"/>' : '<a href="'+m.src+'" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open '+escapeHtml(m.name)+'</a>')+
@@ -388,7 +388,7 @@
         '<button type="submit" class="btn btn-primary btn-block">Log in</button>'+
       '</form>'+
       '<div class="auth-toggle">'+
-        '<button data-action="show-signup">Accept an invite</button>'+
+        '<button data-action="show-signup">New User Login</button>'+
         '<button data-action="forgot-password">Forgot password?</button>'+
       '</div>'+
     '</div></div>';
@@ -421,6 +421,10 @@
   }
   function navTab(tab, label){
     return '<button class="tab '+(STATE.activeTab===tab?'active':'')+'" data-action="nav" data-tab="'+tab+'">'+label+'</button>';
+  }
+  function cardTitleWithClose(title){
+    return '<div class="card-title card-title-row"><span>'+title+'</span>'+
+      '<button class="tab-close-btn" data-action="nav" data-tab="dashboard" title="Close">X</button></div>';
   }
 
   /* =========================================================
@@ -475,7 +479,7 @@
 
   function renderClaimForm(){
     var wallet = computeWallet(STATE.profile.id);
-    return '<div class="card"><div class="card-title">Submit a New Claim</div>'+
+    return '<div class="card">'+cardTitleWithClose('Submit a New Claim')+
       '<div class="info-banner banner-warning">'+escapeHtml(claimCutoffNotice())+'</div>'+
       '<form data-form="submit-claim" class="claim-form">'+
         '<label>Benefit Category<select name="category" required><option value="">Select a category...</option>'+
@@ -508,7 +512,7 @@
     if(filter!=='all') claims = claims.filter(function(c){ return c.status===filter; });
     claims.sort(function(a,b){ return b.submitted_at.localeCompare(a.submitted_at); });
     var filters = ['all','pending','approved','rejected'];
-    return '<div class="card"><div class="card-title">Transaction History</div>'+
+    return '<div class="card">'+cardTitleWithClose('Transaction History')+
       '<div class="muted small" style="margin-bottom:12px;">Pending and rejected claims can be edited or deleted. Approved claims are locked.</div>'+
       '<div class="filter-row">'+filters.map(function(f){ return '<button class="chip-filter '+(filter===f?'active':'')+'" data-action="filter-history" data-filter="'+f+'">'+(f.charAt(0).toUpperCase()+f.slice(1))+'</button>'; }).join('')+'</div>'+
       renderClaimsTable(claims,false,false,true)+
@@ -517,8 +521,8 @@
 
   function renderUserNotifications(){
     var notifs = STATE.notifications.slice().sort(function(a,b){ return b.created_at.localeCompare(a.created_at); });
-    if(!notifs.length) return '<div class="card"><div class="card-title">Notifications</div><div class="empty-state">No notifications yet.</div></div>';
-    return '<div class="card"><div class="card-title">Notifications</div><div class="notif-list">'+
+    if(!notifs.length) return '<div class="card">'+cardTitleWithClose('Notifications')+'<div class="empty-state">No notifications yet.</div></div>';
+    return '<div class="card">'+cardTitleWithClose('Notifications')+'<div class="notif-list">'+
       notifs.map(function(n){
         return '<div class="notif-item '+(n.read?'':'unread')+'"><div>'+escapeHtml(n.message)+'</div>'+
           '<div class="tiny muted">'+fmtDateTime(n.created_at)+'</div>'+
@@ -533,7 +537,7 @@
   ========================================================== */
   function renderClaimsTable(claims, showEmployee, adminActions, userActions){
     if(!claims.length) return '<div class="empty-state">No submissions found.</div>';
-    var colCount = 6 + (showEmployee?1:0) + (adminActions?1:0) + (userActions?1:0);
+    var colCount = 7 + (showEmployee?1:0) + (adminActions?1:0) + (userActions?1:0);
     var rows = claims.map(function(c){
       var row = '<tr>'+
         (showEmployee ? '<td>'+escapeHtml(employeeName(c.employee_id))+'</td>' : '')+
@@ -541,6 +545,7 @@
         '<td>'+escapeHtml(c.vendor||'-')+'</td>'+
         '<td>'+fmtCurrencyAmount(c.currency, c.amount)+((c.currency && c.currency!=='SGD') ? '<div class="tiny muted">\u2248 '+fmtMoney(sgdAmountOf(c))+' SGD</div>' : '')+'</td>'+
         '<td>'+fmtDate(c.receipt_date)+'</td>'+
+        '<td>'+fmtDate((c.submitted_at||'').slice(0,10))+'</td>'+
         '<td><span class="status-pill status-'+c.status+'">'+c.status+'</span>'+
           (c.status==='rejected' && c.reject_reason ? '<div class="tiny muted">'+escapeHtml(c.reject_reason)+'</div>' : '')+
         '</td>'+
@@ -558,7 +563,7 @@
     }).join('');
     return '<div class="table-wrap"><table class="data-table"><thead><tr>'+
       (showEmployee?'<th>Employee</th>':'')+
-      '<th>Category</th><th>Vendor</th><th>Amount</th><th>Receipt Date</th><th>Status</th><th>Receipt</th>'+
+      '<th>Category</th><th>Vendor</th><th>Amount</th><th>Receipt Date</th><th>Submitted</th><th>Status</th><th>Receipt</th>'+
       (adminActions?'<th>Actions</th>':'')+
       (userActions?'<th>Actions</th>':'')+
     '</tr></thead><tbody>'+rows+'</tbody></table></div>';
@@ -636,7 +641,7 @@
       '<div class="tabs">'+
         navTab('approvals','Pending Approvals'+(pendingCount?' <span class="badge">'+pendingCount+'</span>':''))+
         navTab('all','All Submissions')+
-        navTab('staff','Staff Management')+
+        navTab('staff','Employee Management')+
         navTab('benefits','Benefit Categories')+
         navTab('access','User Access')+
         navTab('reports','Reports')+
@@ -691,14 +696,14 @@
     }).join('');
 
     return ''+
-    '<div class="card"><div class="card-title">Invite Staff Member</div>'+
+    '<div class="card"><div class="card-title">Invite Employee</div>'+
       '<form data-form="invite-staff" class="inline-form">'+
         '<label class="mini-field">Full Name<input type="text" name="name" placeholder="e.g. Jane Lim" required /></label>'+
         '<label class="mini-field">Work Email<input type="email" name="email" placeholder="jane@company.com" required /></label>'+
         '<label class="mini-field">Annual Allocation<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" /></label>'+
         '<button type="submit" class="btn btn-primary">Send Invite</button>'+
       '</form>'+
-      '<div class="field-hint">New staff are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up.</div>'+
+      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Bulk Invite (CSV)</div>'+
       '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation. First row is treated as a header and skipped.</div>'+
@@ -706,7 +711,7 @@
     (pendingInvites.length ? '<div class="card"><div class="card-title">Pending Invites</div><div class="table-wrap"><table class="data-table">'+
       '<thead><tr><th>Name</th><th>Email</th><th>Allocation</th><th>Invited</th><th>Actions</th></tr></thead>'+
       '<tbody>'+inviteRows+'</tbody></table></div></div>' : '')+
-    '<div class="card"><div class="card-title">Staff Directory</div>'+
+    '<div class="card"><div class="card-title">Employee Directory</div>'+
       '<div class="filter-row">'+staffFilters.map(function(f){ return '<button class="chip-filter '+(roleFilter===f.key?'active':'')+'" data-action="filter-staff" data-filter="'+f.key+'">'+f.label+'</button>'; }).join('')+'</div>'+
       '<div class="table-wrap"><table class="data-table">'+
       '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Status</th><th>Actions</th></tr></thead>'+
@@ -736,7 +741,7 @@
     return '<div class="card"><div class="card-title">User Access Rights</div><div class="table-wrap"><table class="data-table">'+
       '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead>'+
       '<tbody>'+rows+'</tbody></table></div>'+
-      '<div class="field-hint">Password resets are self-service - staff use "Forgot password?" on the login screen.</div></div>';
+      '<div class="field-hint">Password resets are self-service - employees use "Forgot password?" on the login screen.</div></div>';
   }
 
   function renderAdminReports(){
@@ -1302,6 +1307,8 @@
   /* =========================================================
      BOOTSTRAP
   ========================================================== */
+  window.closeReceiptModal = function(){ STATE.modal=null; render(); };
+
   var app = document.getElementById('app');
   app.addEventListener('click', function(e){ handleClick(e).catch(function(err){ console.error(err); }); });
   app.addEventListener('submit', function(e){ handleSubmit(e).catch(function(err){ console.error(err); }); });
