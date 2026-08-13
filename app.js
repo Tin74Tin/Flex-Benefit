@@ -537,7 +537,7 @@
   ========================================================== */
   function renderClaimsTable(claims, showEmployee, adminActions, userActions){
     if(!claims.length) return '<div class="empty-state">No submissions found.</div>';
-    var colCount = 7 + (showEmployee?1:0) + (adminActions?1:0) + (userActions?1:0);
+    var colCount = 8 + (showEmployee?1:0) + (adminActions?1:0) + (userActions?1:0);
     var rows = claims.map(function(c){
       var row = '<tr>'+
         (showEmployee ? '<td>'+escapeHtml(employeeName(c.employee_id))+'</td>' : '')+
@@ -546,6 +546,7 @@
         '<td>'+fmtCurrencyAmount(c.currency, c.amount)+((c.currency && c.currency!=='SGD') ? '<div class="tiny muted">\u2248 '+fmtMoney(sgdAmountOf(c))+' SGD</div>' : '')+'</td>'+
         '<td>'+fmtDate(c.receipt_date)+'</td>'+
         '<td>'+fmtDate((c.submitted_at||'').slice(0,10))+'</td>'+
+        '<td>'+(c.status==='approved' ? fmtDate((c.decided_at||'').slice(0,10)) : '-')+'</td>'+
         '<td><span class="status-pill status-'+c.status+'">'+c.status+'</span>'+
           (c.status==='rejected' && c.reject_reason ? '<div class="tiny muted">'+escapeHtml(c.reject_reason)+'</div>' : '')+
         '</td>'+
@@ -563,7 +564,7 @@
     }).join('');
     return '<div class="table-wrap"><table class="data-table"><thead><tr>'+
       (showEmployee?'<th>Employee</th>':'')+
-      '<th>Category</th><th>Vendor</th><th>Amount</th><th>Receipt Date</th><th>Submitted</th><th>Status</th><th>Receipt</th>'+
+      '<th>Category</th><th>Vendor</th><th>Amount</th><th>Receipt Date</th><th>Will Be Processed</th><th>Approved</th><th>Status</th><th>Receipt</th>'+
       (adminActions?'<th>Actions</th>':'')+
       (userActions?'<th>Actions</th>':'')+
     '</tr></thead><tbody>'+rows+'</tbody></table></div>';
@@ -844,7 +845,23 @@
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Creating account...';
     return supabase.auth.signUp({email:email, password:password}).then(function(res){
-      if(res.error){ STATE.authError = res.error.message; render(); return; }
+      if(res.error){
+        var msg = res.error.message || '';
+        if(/already registered|already exists|already been registered/i.test(msg)){
+          STATE.authError = 'This email is already registered. Please log in instead.';
+          showToast('This email is already registered - try logging in instead.', 'error');
+        } else {
+          STATE.authError = msg;
+          render();
+        }
+        return;
+      }
+      var alreadyRegistered = res.data && res.data.user && Array.isArray(res.data.user.identities) && res.data.user.identities.length===0;
+      if(alreadyRegistered){
+        STATE.authError = 'This email is already registered. Please log in instead.';
+        showToast('This email is already registered - try logging in instead.', 'error');
+        return;
+      }
       if(res.data.session){
         STATE.session = res.data.session;
         STATE.loading = true; render();
