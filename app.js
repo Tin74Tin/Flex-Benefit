@@ -35,6 +35,7 @@
     confirmDeleteClaimId: null,
     claimFormError: null,
     editingAllocId: null,
+    editingTerminationId: null,
     confirmDeactivateId: null,
     confirmDeleteProfileId: null,
     confirmRevokeInvite: null,
@@ -42,6 +43,7 @@
     historyFilter: 'all',
     historySearchQuery: '',
     allSubmissionsSearchQuery: '',
+    reportSearchQuery: '',
     reportMonth: null, reportYear: null,
     _realtimeSubscribed: false
   };
@@ -238,8 +240,9 @@
       totalClaimed+=amt;
       byCategory[c.category] = byCategory[c.category]||{count:0,total:0};
       byCategory[c.category].count++; byCategory[c.category].total+=amt;
-      byEmployee[c.employee_id] = byEmployee[c.employee_id]||{count:0,total:0,name:employeeName(c.employee_id)};
+      byEmployee[c.employee_id] = byEmployee[c.employee_id]||{count:0,total:0,name:employeeName(c.employee_id),categories:{}};
       byEmployee[c.employee_id].count++; byEmployee[c.employee_id].total+=amt;
+      byEmployee[c.employee_id].categories[c.category] = (byEmployee[c.employee_id].categories[c.category]||0) + amt;
     });
     return {byCategory:byCategory, byEmployee:byEmployee, totalClaimed:totalClaimed, totalCount:filtered.length};
   }
@@ -720,6 +723,9 @@
       var allocCell = STATE.editingAllocId===p.id
         ? '<input type="number" min="0" step="1" style="width:90px" id="alloc-input-'+p.id+'" value="'+p.annual_allocation+'"/> <button class="btn btn-sm btn-primary" data-action="save-alloc" data-id="'+p.id+'">Save</button>'
         : fmtMoney(p.annual_allocation)+' <button class="link-btn" data-action="edit-alloc" data-id="'+p.id+'">Edit</button>';
+      var terminationCell = STATE.editingTerminationId===p.id
+        ? '<input type="date" style="width:150px" id="termination-input-'+p.id+'" value="'+(p.date_of_termination||'')+'"/> <button class="btn btn-sm btn-primary" data-action="save-termination" data-id="'+p.id+'">Save</button>'
+        : (p.date_of_termination ? fmtDate(p.date_of_termination) : '-')+' <button class="link-btn" data-action="edit-termination" data-id="'+p.id+'">Edit</button>';
       var actionsCell;
       if(STATE.confirmDeactivateId===p.id){
         actionsCell = '<button class="btn btn-sm btn-danger" data-action="toggle-active-confirm" data-id="'+p.id+'">Confirm?</button> <button class="btn btn-sm btn-ghost" data-action="toggle-active-cancel" data-id="'+p.id+'">Cancel</button>';
@@ -734,6 +740,8 @@
         '<td><span class="role-chip">'+roleLabel+'</span></td>'+
         '<td>'+allocCell+'</td>'+
         '<td>'+fmtDate(p.date_of_joining)+'</td>'+
+        '<td>'+(p.effective_date ? fmtDate(p.effective_date) : '-')+'</td>'+
+        '<td>'+terminationCell+'</td>'+
         '<td><span class="status-pill '+(p.active?'status-approved':'status-rejected')+'">'+(p.active?'Active':'Inactive')+'</span></td>'+
         '<td class="actions-cell">'+actionsCell+'</td></tr>';
     }).join('');
@@ -741,9 +749,17 @@
 
     var pendingInvites = STATE.invites.filter(function(i){ return !i.used; });
     var inviteRows = pendingInvites.map(function(i){
+      var welcomeCell;
+      if(i.welcome_email_sent_at){
+        welcomeCell = fmtDateTime(i.welcome_email_sent_at);
+      } else if(i.effective_date){
+        welcomeCell = '<span class="tiny muted">Scheduled for '+fmtDate(i.effective_date)+'</span>';
+      } else {
+        welcomeCell = '-';
+      }
       return '<tr><td>'+escapeHtml(i.name)+'</td><td>'+escapeHtml(i.email)+'</td><td>'+fmtMoney(i.annual_allocation)+'</td>'+
-        '<td>'+fmtDateTime(i.created_at)+'</td>'+
-        '<td>'+(i.effective_date ? fmtDate(i.effective_date)+(i.welcome_email_sent?' <span class="tiny muted">(email sent)</span>':'') : '-')+'</td>'+
+        '<td>'+welcomeCell+'</td>'+
+        '<td>'+(i.effective_date ? fmtDate(i.effective_date) : '-')+'</td>'+
         '<td>'+(STATE.confirmRevokeInvite===i.email
           ? '<button class="btn btn-sm btn-danger" data-action="revoke-invite-confirm" data-email="'+escapeHtml(i.email)+'">Confirm?</button> <button class="btn btn-sm btn-ghost" data-action="revoke-invite-cancel">Cancel</button>'
           : '<button class="btn btn-sm btn-ghost" data-action="revoke-invite" data-email="'+escapeHtml(i.email)+'">Revoke</button>')+
@@ -770,13 +786,13 @@
         '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
       '</div>'+
     '</div>'+
-    (pendingInvites.length ? '<div class="card"><div class="card-title">Pending Invites</div><div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Allocation</th><th>Invited</th><th>Effective Date</th><th>Actions</th></tr></thead>'+
+    (pendingInvites.length ? '<div class="card"><div class="card-title">Pending Employee New User Sign Up</div><div class="table-wrap"><table class="data-table">'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Allocation</th><th>Welcome Email Sent</th><th>Effective Date</th><th>Actions</th></tr></thead>'+
       '<tbody>'+inviteRows+'</tbody></table></div></div>' : '')+
     '<div class="card"><div class="card-title">Employee Directory</div>'+
       '<div class="filter-row">'+staffFilters.map(function(f){ return '<button class="chip-filter '+(roleFilter===f.key?'active':'')+'" data-action="filter-staff" data-filter="'+f.key+'">'+f.label+'</button>'; }).join('')+'</div>'+
       '<div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Date of Joining</th><th>Status</th><th>Actions</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Date of Employment</th><th>Effective Date</th><th>Date of Termination</th><th>Status</th><th>Actions</th></tr></thead>'+
       '<tbody>'+staffRows+'</tbody></table></div>'+
       '<div class="field-hint">Deleting an employee removes their account, all their claim history, and their notifications - permanently, and this cannot be undone. Their login itself still technically exists in Supabase until removed from the dashboard\'s Authentication &gt; Users page too, but they won\'t be able to do anything with it here once deleted.</div>'+
     '</div>';
@@ -815,14 +831,17 @@
     var report = buildMonthlyReport(STATE.claims, y, m);
     var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
     var years = uniqueYearsFromClaims(STATE.claims, now.getFullYear());
-    var catRows = STATE.benefits.map(function(b){
-      var r = report.byCategory[b]||{count:0,total:0};
-      return '<tr><td>'+escapeHtml(b)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td></tr>';
-    }).join('');
-    var empRows = STATE.profiles.filter(function(p){ return p.role==='user'; }).map(function(p){
-      var r = report.byEmployee[p.id]||{count:0,total:0};
+    var searchQuery = (STATE.reportSearchQuery||'').trim().toLowerCase();
+    var empRows = STATE.profiles.filter(function(p){
+      return p.role==='user' && (!searchQuery || p.name.toLowerCase().indexOf(searchQuery)!==-1);
+    }).map(function(p){
+      var r = report.byEmployee[p.id]||{count:0,total:0,categories:{}};
       var pct = p.annual_allocation>0 ? (r.total/p.annual_allocation*100) : 0;
-      return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td>'+fmtMoney(p.annual_allocation)+'</td><td>'+pct.toFixed(1)+'%</td></tr>';
+      var catKeys = Object.keys(r.categories||{});
+      var catBreakdown = catKeys.length
+        ? catKeys.map(function(cat){ return escapeHtml(cat)+': '+fmtMoney(r.categories[cat]); }).join(', ')
+        : '-';
+      return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td>'+fmtMoney(p.annual_allocation)+'</td><td>'+pct.toFixed(1)+'%</td><td class="tiny">'+catBreakdown+'</td></tr>';
     }).join('');
     return ''+
     '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
@@ -833,10 +852,11 @@
       '</div>'+
       '<div class="report-summary">Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s).</div>'+
     '</div>'+
-    '<div class="card"><div class="card-title">By Benefit Category</div><div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Category</th><th># Claims</th><th>Total Amount</th></tr></thead><tbody>'+catRows+'</tbody></table></div></div>'+
-    '<div class="card"><div class="card-title">By Employee</div><div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Employee</th><th># Claims</th><th>Total Amount</th><th>Annual Allocation</th><th>Utilisation %</th></tr></thead><tbody>'+empRows+'</tbody></table></div></div>';
+    '<div class="card"><div class="card-title">By Employee</div>'+
+      '<input type="text" id="report-search-input" class="search-input" placeholder="Search by employee name..." value="'+escapeHtml(STATE.reportSearchQuery||'')+'" style="margin-bottom:12px;" />'+
+      '<div class="table-wrap"><table class="data-table">'+
+      '<thead><tr><th>Employee</th><th># Claims</th><th>Amount Claimed</th><th>Entitlement (SGD)</th><th>Utilisation %</th><th>Category Breakdown</th></tr></thead><tbody>'+empRows+'</tbody></table></div>'+
+    '</div>';
   }
 
   function exportReportExcel(){
@@ -850,9 +870,9 @@
     var summaryData = [['Monthly Utilisation Report'],[monthNames[m]+' '+y],[],
       ['Total Claimed (Approved)', Number(report.totalClaimed.toFixed(2))],
       ['Total Submissions', report.totalCount]];
-    var catData = [['Category','Number of Claims','Total Amount']];
+    var catData = [['Category','Number of Claims','Amount Claimed']];
     STATE.benefits.forEach(function(b){ var r=report.byCategory[b]||{count:0,total:0}; catData.push([b, r.count, Number(r.total.toFixed(2))]); });
-    var empData = [['Employee','Number of Claims','Total Amount','Annual Allocation','Utilisation %']];
+    var empData = [['Employee','Number of Claims','Amount Claimed','Entitlement (SGD)','Utilisation %']];
     STATE.profiles.filter(function(p){ return p.role==='user'; }).forEach(function(p){
       var r = report.byEmployee[p.id]||{count:0,total:0};
       var pct = p.annual_allocation>0 ? (r.total/p.annual_allocation*100) : 0;
@@ -1265,6 +1285,17 @@
     }).then(function(){ render(); });
   }
 
+  function saveTermination(id){
+    var input = document.getElementById('termination-input-'+id);
+    var val = input ? input.value : '';
+    STATE.editingTerminationId = null;
+    return supabase.from('profiles').update({date_of_termination: val || null}).eq('id', id).then(function(res){
+      if(res.error){ showToast('Could not update date of termination: '+res.error.message, 'error'); return; }
+      showToast('Date of termination updated.', 'success');
+      return loadAppData();
+    }).then(function(){ render(); });
+  }
+
   function addBenefit(form){
     var cat = form.category.value.trim();
     if(!cat) return Promise.resolve();
@@ -1315,6 +1346,8 @@
       case 'delete-claim-confirm': return deleteClaimConfirmed(id);
       case 'edit-alloc': STATE.editingAllocId=id; render(); return Promise.resolve();
       case 'save-alloc': return saveAlloc(id);
+      case 'edit-termination': STATE.editingTerminationId=id; render(); return Promise.resolve();
+      case 'save-termination': return saveTermination(id);
       case 'toggle-active': STATE.confirmDeactivateId=id; STATE.confirmDeleteProfileId=null; render(); return Promise.resolve();
       case 'toggle-active-cancel': STATE.confirmDeactivateId=null; render(); return Promise.resolve();
       case 'toggle-active-confirm': return toggleActiveConfirmed(id);
@@ -1448,6 +1481,8 @@
       scheduleSearchFilter(t, 'historySearchQuery');
     } else if(t.id==='all-submissions-search-input'){
       scheduleSearchFilter(t, 'allSubmissionsSearchQuery');
+    } else if(t.id==='report-search-input'){
+      scheduleSearchFilter(t, 'reportSearchQuery');
     }
   }
 
