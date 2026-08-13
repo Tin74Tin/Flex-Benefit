@@ -137,7 +137,7 @@
     var cutoff = new Date(year, month, 25, 23, 59, 59, 999);
     var cutoffLabel = '25 ' + monthNames[month].slice(0,3) + ' ' + year + ', 23:59';
     if(now <= cutoff){
-      return 'Submit by ' + cutoffLabel + ' to have this claim processed in ' + monthNames[month] + '. Submissions after this cutoff are processed the following month.';
+      return 'Submit by ' + cutoffLabel + ' to have this claim processed in ' + monthNames[month] + '. Submissions after this cutoff will be processed the following month.';
     }
     var nextMonthIdx = (month + 1) % 12;
     var nextMonthYear = month === 11 ? year + 1 : year;
@@ -564,7 +564,7 @@
     }).join('');
     return '<div class="table-wrap"><table class="data-table"><thead><tr>'+
       (showEmployee?'<th>Employee</th>':'')+
-      '<th>Category</th><th>Vendor</th><th>Amount</th><th>Receipt Date</th><th>Will Be Processed</th><th>Approved</th><th>Status</th><th>Receipt</th>'+
+      '<th>Category</th><th>Vendor</th><th>Amount</th><th>Receipt Date</th><th>Submission Date</th><th>Approved</th><th>Status</th><th>Receipt</th>'+
       (adminActions?'<th>Actions</th>':'')+
       (userActions?'<th>Actions</th>':'')+
     '</tr></thead><tbody>'+rows+'</tbody></table></div>';
