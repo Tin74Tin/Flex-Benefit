@@ -491,7 +491,11 @@
         '<div class="muted small">Available balance: '+fmtMoney(wallet.available)+' (SGD)</div>'+
         '<div id="claim-amount-live-error" class="field-error" style="display:none;"></div>'+
         '<label>Date of Receipt<input type="date" name="receiptDate" required max="'+todayStr()+'" /></label>'+
-        '<label>Upload Receipt (photo or PDF, max 4MB)<input type="file" name="receipt" accept="image/*,.pdf" required /></label>'+
+        '<label>Upload Receipt (photo or PDF, max 4MB)</label>'+
+        '<div class="dropzone" id="claim-receipt-dropzone">'+
+          '<input type="file" name="receipt" accept="image/*,.pdf" required />'+
+          '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
+        '</div>'+
         (STATE.claimFormError ? '<div class="field-error">'+escapeHtml(STATE.claimFormError)+'</div>' : '')+
         '<div class="field-hint">Only Gym membership, Health screening, Optical, Dental and Leisure travel are claimable. Other expenses, including petrol, cannot be reimbursed through this wallet.</div>'+
         '<button type="submit" class="btn btn-primary">Submit Claim</button>'+
@@ -609,7 +613,11 @@
       '<div id="edit-amount-preview-'+c.id+'" class="tiny muted"></div>'+
       '<div id="edit-amount-live-error-'+c.id+'" class="field-error" style="display:none;"></div>'+
       '<label>Receipt Date<input type="date" id="edit-date-'+c.id+'" value="'+c.receipt_date+'" max="'+todayStr()+'"/></label>'+
-      '<label>Replace Receipt (optional)<input type="file" id="edit-receipt-'+c.id+'" accept="image/*,.pdf"/></label>'+
+      '<label>Replace Receipt (optional)</label>'+
+      '<div class="dropzone" id="edit-receipt-dropzone-'+c.id+'">'+
+        '<input type="file" id="edit-receipt-'+c.id+'" accept="image/*,.pdf"/>'+
+        '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
+      '</div>'+
       (STATE.claimFormError ? '<div class="field-error">'+escapeHtml(STATE.claimFormError)+'</div>' : '')+
       (c.status==='rejected' ? '<div class="field-hint">Saving will resubmit this claim for review.</div>' : '')+
       '<div class="reject-actions">'+
@@ -1299,6 +1307,33 @@
   app.addEventListener('submit', function(e){ handleSubmit(e).catch(function(err){ console.error(err); }); });
   app.addEventListener('change', function(e){ handleChange(e).catch(function(err){ console.error(err); }); });
   app.addEventListener('input', handleInput);
+
+  app.addEventListener('dragover', function(e){
+    var zone = e.target.closest && e.target.closest('.dropzone');
+    if(!zone) return;
+    e.preventDefault();
+    zone.classList.add('dragover');
+  });
+  app.addEventListener('dragleave', function(e){
+    var zone = e.target.closest && e.target.closest('.dropzone');
+    if(!zone) return;
+    zone.classList.remove('dragover');
+  });
+  app.addEventListener('drop', function(e){
+    var zone = e.target.closest && e.target.closest('.dropzone');
+    if(!zone) return;
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    var input = zone.querySelector('input[type=file]');
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if(input && files && files.length){
+      input.files = files;
+      input.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+  });
+
+  window.addEventListener('dragover', function(e){ e.preventDefault(); });
+  window.addEventListener('drop', function(e){ e.preventDefault(); });
 
   init();
 })();
