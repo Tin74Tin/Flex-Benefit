@@ -938,6 +938,7 @@
     var emailInput = document.querySelector('form[data-form="login"] input[name="email"]');
     var email = emailInput ? emailInput.value.trim() : '';
     if(!email){ showToast('Enter your email above first, then click "Forgot password?".', 'error'); return Promise.resolve(); }
+    STATE.authError = ''; render();
     var btn = document.querySelector('[data-action="forgot-password"]');
     var originalLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
