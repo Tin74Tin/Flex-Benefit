@@ -47,11 +47,22 @@
      UTILITIES
   ========================================================== */
   function fmtMoney(n){ n = isFinite(n)?n:0; var neg = n<0; n=Math.abs(n); var s='$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); return neg? '-'+s : s; }
-  var CURRENCY_OPTIONS = ['SGD','USD','MYR','IDR','GBP','EUR','AUD','CNY'];
+  var CURRENCY_GROUPS = [
+    {label: null, items: ['SGD']},
+    {label: 'ASEAN', items: ['BND','KHR','IDR','LAK','MYR','MMK','PHP','THB','VND']},
+    {label: 'Asia', items: ['CNY','HKD','INR','JPY','KRW','TWD','PKR','BDT','LKR','AED','SAR','ILS']},
+    {label: 'Rest of World', items: ['USD','EUR','GBP','AUD','NZD','CAD','CHF','ZAR']}
+  ];
   function renderCurrencyOptions(selected){
-    return CURRENCY_OPTIONS.map(function(cur){
-      return '<option value="'+cur+'" '+(cur===(selected||'SGD')?'selected':'')+'>'+cur+'</option>';
-    }).join('');
+    selected = selected || 'SGD';
+    var html = '';
+    CURRENCY_GROUPS.forEach(function(group){
+      var optsHtml = group.items.map(function(cur){
+        return '<option value="'+cur+'" '+(cur===selected?'selected':'')+'>'+cur+'</option>';
+      }).join('');
+      html += group.label ? ('<optgroup label="'+group.label+'">'+optsHtml+'</optgroup>') : optsHtml;
+    });
+    return html;
   }
   function fmtCurrencyAmount(currency, amount){
     var n = Number(amount)||0;
@@ -60,20 +71,41 @@
 
   var EXCHANGE_RATE_CACHE = {};
   var EXCHANGE_RATE_CACHE_MS = 60*60*1000;
+  function fetchRateFrankfurter(currency){
+    return fetch('https://api.frankfurter.app/latest?from='+encodeURIComponent(currency)+'&to=SGD')
+      .then(function(res){ if(!res.ok) throw new Error('Frankfurter returned '+res.status); return res.json(); })
+      .then(function(data){
+        var rate = data && data.rates && data.rates.SGD;
+        if(!rate || isNaN(rate)) throw new Error('Frankfurter has no SGD rate for '+currency);
+        return rate;
+      });
+  }
+  function fetchRateOpenERApi(currency){
+    return fetch('https://open.er-api.com/v6/latest/'+encodeURIComponent(currency))
+      .then(function(res){ if(!res.ok) throw new Error('open.er-api returned '+res.status); return res.json(); })
+      .then(function(data){
+        var rate = data && data.rates && data.rates.SGD;
+        if(!rate || isNaN(rate)) throw new Error('open.er-api has no SGD rate for '+currency);
+        return rate;
+      });
+  }
   function getExchangeRateToSGD(currency){
     if(!currency || currency==='SGD') return Promise.resolve(1);
     var cached = EXCHANGE_RATE_CACHE[currency];
     if(cached && (Date.now()-cached.at) < EXCHANGE_RATE_CACHE_MS){
       return Promise.resolve(cached.rate);
     }
-    return fetch('https://api.frankfurter.app/latest?from='+encodeURIComponent(currency)+'&to=SGD')
-      .then(function(res){ if(!res.ok) throw new Error('Exchange rate lookup failed ('+res.status+')'); return res.json(); })
-      .then(function(data){
-        var rate = data && data.rates && data.rates.SGD;
-        if(!rate || isNaN(rate)) throw new Error('No exchange rate returned for '+currency);
-        EXCHANGE_RATE_CACHE[currency] = {rate:rate, at:Date.now()};
-        return rate;
+    return fetchRateFrankfurter(currency).catch(function(err1){
+      console.error('Frankfurter rate lookup failed', err1);
+      return fetchRateOpenERApi(currency).catch(function(err2){
+        console.error('open.er-api rate lookup failed', err2);
+        var combined = new Error('Both rate providers failed for '+currency+' - ('+err1.message+') / ('+err2.message+')');
+        throw combined;
       });
+    }).then(function(rate){
+      EXCHANGE_RATE_CACHE[currency] = {rate:rate, at:Date.now()};
+      return rate;
+    });
   }
 
   function fmtDate(d){ if(!d) return '-'; var dt=new Date(d+'T00:00:00'); if(isNaN(dt)) return d; return dt.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
@@ -980,7 +1012,7 @@
       return applyUpdate();
     }).catch(function(err){
       console.error(err);
-      showToast('Could not fetch the exchange rate - try again or switch to SGD.', 'error');
+      showToast('Could not fetch the exchange rate: '+(err.message||err), 'error');
     });
   }
 
@@ -1219,9 +1251,9 @@
             errorEl.textContent=''; errorEl.style.display='none';
           }
         }
-      }).catch(function(){
+      }).catch(function(err){
         if(liveCheckGeneration[errorId] !== myGen) return;
-        if(errorEl){ errorEl.textContent = 'Could not fetch the exchange rate - try again or switch to SGD.'; errorEl.style.display=''; }
+        if(errorEl){ errorEl.textContent = 'Could not fetch the exchange rate: '+((err&&err.message)||err); errorEl.style.display=''; }
         if(previewEl) previewEl.textContent = '';
       });
     }, 350);
