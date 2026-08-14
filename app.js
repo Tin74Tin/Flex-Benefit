@@ -229,22 +229,43 @@
   }
 
   function buildMonthlyReport(claims, year, month){
-    var filtered = claims.filter(function(c){
-      if(c.status!=='approved') return false;
+    var inMonth = function(c){
       var d = new Date(c.receipt_date+'T00:00:00');
       return d.getFullYear()===year && d.getMonth()===month;
-    });
+    };
+    var approved = claims.filter(function(c){ return c.status==='approved' && inMonth(c); });
+    var rejected = claims.filter(function(c){ return c.status==='rejected' && inMonth(c); });
+
     var byCategory={}, byEmployee={}, totalClaimed=0;
-    filtered.forEach(function(c){
+    approved.forEach(function(c){
       var amt = sgdAmountOf(c);
       totalClaimed+=amt;
       byCategory[c.category] = byCategory[c.category]||{count:0,total:0};
       byCategory[c.category].count++; byCategory[c.category].total+=amt;
       byEmployee[c.employee_id] = byEmployee[c.employee_id]||{count:0,total:0,name:employeeName(c.employee_id),categories:{}};
       byEmployee[c.employee_id].count++; byEmployee[c.employee_id].total+=amt;
-      byEmployee[c.employee_id].categories[c.category] = (byEmployee[c.employee_id].categories[c.category]||0) + amt;
+      byEmployee[c.employee_id].categories[c.category] = byEmployee[c.employee_id].categories[c.category]||{count:0,total:0};
+      byEmployee[c.employee_id].categories[c.category].count++;
+      byEmployee[c.employee_id].categories[c.category].total+=amt;
     });
-    return {byCategory:byCategory, byEmployee:byEmployee, totalClaimed:totalClaimed, totalCount:filtered.length};
+
+    var totalRejected = 0;
+    var rejectedClaims = rejected.map(function(c){
+      var amt = sgdAmountOf(c);
+      totalRejected += amt;
+      var reasonText = c.reject_reason || '';
+      if(c.admin_note){ reasonText += (reasonText ? ' - ' : '') + c.admin_note; }
+      return {
+        employeeId: c.employee_id,
+        employeeName: employeeName(c.employee_id),
+        category: c.category,
+        amount: amt,
+        reason: reasonText || 'No reason given'
+      };
+    });
+
+    return {byCategory:byCategory, byEmployee:byEmployee, totalClaimed:totalClaimed, totalCount:approved.length,
+      rejectedClaims:rejectedClaims, totalRejectedCount:rejected.length, totalRejectedAmount:totalRejected};
   }
 
   function uniqueYearsFromClaims(claims, currentYear){
@@ -832,21 +853,38 @@
     var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
     var years = uniqueYearsFromClaims(STATE.claims, now.getFullYear());
     var searchQuery = (STATE.reportSearchQuery||'').trim().toLowerCase();
+    var matchedCategories = searchQuery ? STATE.benefits.filter(function(b){ return b.toLowerCase().indexOf(searchQuery)!==-1; }) : [];
+    var categoryScoped = matchedCategories.length > 0;
+
     var empRows = STATE.profiles.filter(function(p){ return p.role==='user'; }).map(function(p){
       var r = report.byEmployee[p.id]||{count:0,total:0,categories:{}};
-      var pct = p.annual_allocation>0 ? (r.total/p.annual_allocation*100) : 0;
-      var catKeys = Object.keys(r.categories||{});
-      return {p:p, r:r, pct:pct, catKeys:catKeys};
+      var allCatKeys = Object.keys(r.categories||{});
+      var nameMatches = searchQuery && p.name.toLowerCase().indexOf(searchQuery)!==-1;
+      return {p:p, r:r, allCatKeys:allCatKeys, nameMatches:nameMatches};
     }).filter(function(row){
       if(!searchQuery) return true;
-      if(row.p.name.toLowerCase().indexOf(searchQuery)!==-1) return true;
-      return row.catKeys.some(function(cat){ return cat.toLowerCase().indexOf(searchQuery)!==-1; });
+      if(row.nameMatches) return true;
+      if(categoryScoped){ return row.allCatKeys.some(function(cat){ return matchedCategories.indexOf(cat)!==-1; }); }
+      return false;
     }).map(function(row){
-      var catBreakdown = row.catKeys.length
-        ? row.catKeys.map(function(cat){ return escapeHtml(cat)+': '+fmtMoney(row.r.categories[cat]); }).join(', ')
+      var showCatKeys = (categoryScoped && !row.nameMatches) ? row.allCatKeys.filter(function(cat){ return matchedCategories.indexOf(cat)!==-1; }) : row.allCatKeys;
+      var displayCount = 0, displayTotal = 0;
+      showCatKeys.forEach(function(cat){ displayCount += row.r.categories[cat].count; displayTotal += row.r.categories[cat].total; });
+      var pct = row.p.annual_allocation>0 ? (displayTotal/row.p.annual_allocation*100) : 0;
+      var catBreakdown = showCatKeys.length
+        ? showCatKeys.map(function(cat){ return escapeHtml(cat)+': '+fmtMoney(row.r.categories[cat].total); }).join(', ')
         : '-';
-      return '<tr><td>'+escapeHtml(row.p.name)+'</td><td>'+row.r.count+'</td><td>'+fmtMoney(row.r.total)+'</td><td>'+fmtMoney(row.p.annual_allocation)+'</td><td>'+row.pct.toFixed(1)+'%</td><td class="tiny">'+catBreakdown+'</td></tr>';
+      return '<tr><td>'+escapeHtml(row.p.name)+'</td><td>'+displayCount+'</td><td>'+fmtMoney(displayTotal)+'</td><td>'+fmtMoney(row.p.annual_allocation)+'</td><td>'+pct.toFixed(1)+'%</td><td class="tiny">'+catBreakdown+'</td></tr>';
     }).join('');
+
+    var rejectedRows = report.rejectedClaims.filter(function(rc){
+      if(!searchQuery) return true;
+      if(rc.employeeName.toLowerCase().indexOf(searchQuery)!==-1) return true;
+      return rc.category.toLowerCase().indexOf(searchQuery)!==-1;
+    }).map(function(rc){
+      return '<tr><td>'+escapeHtml(rc.employeeName)+'</td><td>'+escapeHtml(rc.category)+'</td><td>'+fmtMoney(rc.amount)+'</td><td>'+escapeHtml(rc.reason)+'</td></tr>';
+    }).join('');
+
     return ''+
     '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
       '<div class="report-controls">'+
@@ -854,12 +892,19 @@
         '<select data-action="set-report-year">'+years.map(function(yr){ return '<option value="'+yr+'" '+(yr===y?'selected':'')+'>'+yr+'</option>'; }).join('')+'</select>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report">Export to Excel</button>'+
       '</div>'+
-      '<div class="report-summary">Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s).</div>'+
+      '<div class="report-summary">Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s). '+
+        '<strong>'+report.totalRejectedCount+'</strong> submission(s) rejected, totaling <strong>'+fmtMoney(report.totalRejectedAmount)+'</strong>.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">By Employee</div>'+
       '<input type="text" id="report-search-input" class="search-input" placeholder="Search by employee name or benefit category..." value="'+escapeHtml(STATE.reportSearchQuery||'')+'" style="margin-bottom:12px;" />'+
+      (categoryScoped ? '<div class="muted small" style="margin-bottom:10px;">Showing # Claims and Amount Claimed for '+matchedCategories.map(escapeHtml).join(', ')+' only.</div>' : '')+
       '<div class="table-wrap"><table class="data-table">'+
       '<thead><tr><th>Employee</th><th># Claims</th><th>Amount Claimed</th><th>Entitlement (SGD)</th><th>Utilisation %</th><th>Category Breakdown</th></tr></thead><tbody>'+empRows+'</tbody></table></div>'+
+    '</div>'+
+    '<div class="card"><div class="card-title">Rejected Claims</div>'+
+      (rejectedRows ? '<div class="table-wrap"><table class="data-table">'+
+        '<thead><tr><th>Employee</th><th>Category</th><th>Amount</th><th>Reason</th></tr></thead><tbody>'+rejectedRows+'</tbody></table></div>'
+        : '<div class="empty-state">No rejected claims for this period.</div>')+
     '</div>';
   }
 
@@ -873,7 +918,9 @@
 
     var summaryData = [['Monthly Utilisation Report'],[monthNames[m]+' '+y],[],
       ['Total Claimed (Approved)', Number(report.totalClaimed.toFixed(2))],
-      ['Total Submissions', report.totalCount]];
+      ['Total Submissions', report.totalCount],
+      ['Total Rejected Submissions', report.totalRejectedCount],
+      ['Total Rejected Amount', Number(report.totalRejectedAmount.toFixed(2))]];
     var catData = [['Category','Number of Claims','Amount Claimed']];
     STATE.benefits.forEach(function(b){ var r=report.byCategory[b]||{count:0,total:0}; catData.push([b, r.count, Number(r.total.toFixed(2))]); });
     var empData = [['Employee','Number of Claims','Amount Claimed','Entitlement (SGD)','Utilisation %']];
@@ -882,15 +929,19 @@
       var pct = p.annual_allocation>0 ? (r.total/p.annual_allocation*100) : 0;
       empData.push([p.name, r.count, Number(r.total.toFixed(2)), Number(p.annual_allocation), Number(pct.toFixed(1))]);
     });
+    var rejData = [['Employee','Category','Amount','Reason']];
+    report.rejectedClaims.forEach(function(rc){ rejData.push([rc.employeeName, rc.category, Number(rc.amount.toFixed(2)), rc.reason]); });
 
     try{
       var wb = XLSX.utils.book_new();
       var wsSummary = XLSX.utils.aoa_to_sheet(summaryData); wsSummary['!cols']=[{wch:28},{wch:16}];
       var wsCat = XLSX.utils.aoa_to_sheet(catData); wsCat['!cols']=[{wch:24},{wch:16},{wch:14}];
       var wsEmp = XLSX.utils.aoa_to_sheet(empData); wsEmp['!cols']=[{wch:24},{wch:16},{wch:14},{wch:16},{wch:14}];
+      var wsRej = XLSX.utils.aoa_to_sheet(rejData); wsRej['!cols']=[{wch:24},{wch:18},{wch:12},{wch:40}];
       XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
       XLSX.utils.book_append_sheet(wb, wsCat, 'By Category');
       XLSX.utils.book_append_sheet(wb, wsEmp, 'By Employee');
+      XLSX.utils.book_append_sheet(wb, wsRej, 'Rejected Claims');
       XLSX.writeFile(wb, 'utilisation-report-'+y+'-'+String(m+1).padStart(2,'0')+'.xlsx');
     }catch(err){
       console.error(err);
