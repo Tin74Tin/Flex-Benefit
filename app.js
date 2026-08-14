@@ -933,6 +933,7 @@
         '<select data-action="set-report-month">'+monthNames.map(function(mn,i){ return '<option value="'+i+'" '+(i===m?'selected':'')+'>'+mn+'</option>'; }).join('')+'</select>'+
         '<select data-action="set-report-year">'+years.map(function(yr){ return '<option value="'+yr+'" '+(yr===y?'selected':'')+'>'+yr+'</option>'; }).join('')+'</select>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report">Export to Excel</button>'+
+        '<button class="btn btn-ghost btn-sm" data-action="export-report-pdf">Export to PDF</button>'+
       '</div>'+
       '<div class="report-summary">Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s). '+
         '<strong>'+report.totalRejectedCount+'</strong> submission(s) rejected, totaling <strong>'+fmtMoney(report.totalRejectedAmount)+'</strong>.</div>'+
@@ -957,6 +958,35 @@
           '<th>Reasons</th></tr></thead><tbody>'+rejectedRows+'</tbody></table></div>'
         : '<div class="empty-state">No rejected claims for this period.</div>')+
     '</div>';
+  }
+
+  function drawBarChart(doc, x, y, width, height, data, opts){
+    opts = opts||{};
+    var maxVal = Math.max.apply(null, data.map(function(d){ return d.value; })) || 1;
+    var barCount = data.length;
+    if(!barCount) return;
+    var gap = 6;
+    var barWidth = Math.min(28, (width - gap*(barCount-1)) / barCount);
+    var usedWidth = barWidth*barCount + gap*(barCount-1);
+    var startX = x + (width-usedWidth)/2;
+    var chartBottom = y + height;
+    doc.setDrawColor(210,210,210);
+    doc.line(x, chartBottom, x+width, chartBottom);
+    data.forEach(function(d, i){
+      var barHeight = (d.value/maxVal) * (height-24);
+      var barX = startX + i*(barWidth+gap);
+      var barY = chartBottom - barHeight;
+      doc.setFillColor(19,78,74);
+      doc.rect(barX, barY, barWidth, barHeight, 'F');
+      doc.setFontSize(7);
+      doc.setTextColor(90,90,90);
+      var valueLabel = opts.valueFormat ? opts.valueFormat(d.value) : String(d.value);
+      doc.text(valueLabel, barX+barWidth/2, barY-3, {align:'center'});
+      doc.setFontSize(7);
+      doc.setTextColor(40,40,40);
+      var labelLines = doc.splitTextToSize(d.label, barWidth+gap);
+      doc.text(labelLines.slice(0,2), barX+barWidth/2, chartBottom+8, {align:'center'});
+    });
   }
 
   function exportReportExcel(){
@@ -997,6 +1027,165 @@
     }catch(err){
       console.error(err);
       showToast('Something went wrong building the Excel file.', 'error');
+    }
+  }
+
+  function exportReportPDF(){
+    if(typeof window.jspdf==='undefined' || !window.jspdf.jsPDF){ showToast('PDF export library did not load (needs an internet connection).', 'error'); return; }
+    var now = new Date();
+    var y = STATE.reportYear || now.getFullYear();
+    var m = (STATE.reportMonth!=null) ? STATE.reportMonth : now.getMonth();
+    var report = buildMonthlyReport(STATE.claims, y, m);
+    var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    var periodLabel = monthNames[m]+' '+y;
+    var employees = STATE.profiles.filter(function(p){ return p.role==='user'; });
+
+    var empStats = employees.map(function(p){
+      var r = report.byEmployee[p.id]||{count:0,total:0};
+      var pct = p.annual_allocation>0 ? (r.total/p.annual_allocation*100) : 0;
+      return {name:p.name, count:r.count, total:r.total, allocation:Number(p.annual_allocation)||0, pct:pct};
+    });
+    var totalEntitlementPool = employees.reduce(function(s,p){ return s+(Number(p.annual_allocation)||0); }, 0);
+    var overallUtilPct = totalEntitlementPool>0 ? (report.totalClaimed/totalEntitlementPool*100) : 0;
+    var zeroUsageCount = empStats.filter(function(e){ return e.count===0; }).length;
+    var highUsageCount = empStats.filter(function(e){ return e.pct>=80; }).length;
+    var categoryTotals = STATE.benefits.map(function(b){ return {name:b, total:(report.byCategory[b]||{total:0}).total}; }).sort(function(a,b){ return b.total-a.total; });
+    var topCategory = categoryTotals.length && categoryTotals[0].total>0 ? categoryTotals[0] : null;
+    var rejectionReasonCounts = {};
+    report.rejectedClaims.forEach(function(rc){ rejectionReasonCounts[rc.reason] = (rejectionReasonCounts[rc.reason]||0)+1; });
+    var topRejectionReason = Object.keys(rejectionReasonCounts).sort(function(a,b){ return rejectionReasonCounts[b]-rejectionReasonCounts[a]; })[0];
+    var totalSubmissions = report.totalCount + report.totalRejectedCount;
+    var rejectionRate = totalSubmissions>0 ? (report.totalRejectedCount/totalSubmissions*100) : 0;
+
+    try{
+      var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+      var pageWidth = doc.internal.pageSize.getWidth();
+      var pageHeight = doc.internal.pageSize.getHeight();
+      var margin = 15;
+      var brandColor = [19,78,74];
+
+      /* ---- Page 1: Cover, Key Metrics, Key Insights ---- */
+      doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.rect(0, 0, pageWidth, 38, 'F');
+      doc.setTextColor(255,255,255);
+      doc.setFontSize(19);
+      doc.text('Flex Benefits Portal', margin, 18);
+      doc.setFontSize(11);
+      doc.text('Monthly Utilisation Report - '+periodLabel, margin, 27);
+      doc.setFontSize(9);
+      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for HR', margin, 34);
+
+      doc.setTextColor(40,40,40);
+      doc.setFontSize(9);
+      doc.text('Generated '+fmtDate(todayStr()), margin, 46);
+
+      var cy = 54;
+      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Key Metrics', margin, cy);
+      var metrics = [
+        ['Total Claimed (Approved)', fmtMoney(report.totalClaimed)+' SGD'],
+        ['Total Entitlement Pool', fmtMoney(totalEntitlementPool)+' SGD'],
+        ['Overall Utilisation', overallUtilPct.toFixed(1)+'%'],
+        ['Approved Submissions', String(report.totalCount)],
+        ['Rejected Submissions', report.totalRejectedCount+' ('+rejectionRate.toFixed(1)+'% rejection rate)'],
+        ['Employees With Zero Usage', zeroUsageCount+' of '+employees.length],
+        ['Employees Above 80% Utilisation', String(highUsageCount)]
+      ];
+      doc.autoTable({
+        startY: cy+4, margin:{left:margin, right:margin},
+        body: metrics, theme:'plain', styles:{fontSize:10, cellPadding:1.5},
+        columnStyles:{0:{fontStyle:'bold', cellWidth:85}}
+      });
+      cy = doc.lastAutoTable.finalY + 10;
+
+      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Key Insights', margin, cy); cy += 6;
+      doc.setFontSize(10); doc.setTextColor(40,40,40);
+      var insights = [];
+      if(topCategory) insights.push('The most utilised benefit this period is '+topCategory.name+', accounting for '+fmtMoney(topCategory.total)+' SGD.');
+      if(zeroUsageCount>0) insights.push(zeroUsageCount+' employee(s) submitted no claims this period - consider a reminder or awareness push.');
+      if(highUsageCount>0) insights.push(highUsageCount+' employee(s) have used 80% or more of their entitlement this period.');
+      if(topRejectionReason) insights.push('The most common rejection reason is "'+topRejectionReason+'" ('+rejectionReasonCounts[topRejectionReason]+' occurrence(s)).');
+      if(!insights.length) insights.push('No notable trends to highlight for this period.');
+      insights.forEach(function(line){
+        var split = doc.splitTextToSize('- '+line, pageWidth-margin*2-4);
+        doc.text(split, margin, cy);
+        cy += split.length*5 + 2;
+      });
+
+      var catChartData = STATE.benefits.map(function(b){
+        var r = report.byCategory[b]||{count:0,total:0};
+        return {label:b, value:Number(r.total.toFixed(2))};
+      });
+      cy += 8;
+      if(cy > pageHeight-75){ doc.addPage(); cy = 20; }
+      doc.setFontSize(12); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Amount Claimed by Category', margin, cy);
+      drawBarChart(doc, margin, cy+6, pageWidth-margin*2, 55, catChartData, {valueFormat:function(v){ return fmtMoney(v); }});
+
+      /* ---- Page: Category + Employee tables ---- */
+      doc.addPage();
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('By Benefit Category', margin, 18);
+      var catRows = STATE.benefits.map(function(b){
+        var r = report.byCategory[b]||{count:0,total:0};
+        return [b, String(r.count), fmtMoney(r.total)];
+      });
+      doc.autoTable({
+        startY: 24, margin:{left:margin, right:margin},
+        head:[['Category','# Claims','Amount Claimed (SGD)']], body: catRows,
+        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+      });
+
+      var empSorted = empStats.slice().sort(function(a,b){ return b.pct-a.pct; });
+      var empChartTop = doc.lastAutoTable.finalY + 14;
+      doc.setFontSize(12); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Top Employees by Amount Claimed', margin, empChartTop);
+      var topEmp = empStats.slice().sort(function(a,b){ return b.total-a.total; }).slice(0,8)
+        .map(function(e){ return {label:e.name, value:Number(e.total.toFixed(2))}; });
+      if(topEmp.length){
+        drawBarChart(doc, margin, empChartTop+6, pageWidth-margin*2, 55, topEmp, {valueFormat:function(v){ return fmtMoney(v); }});
+      } else {
+        doc.setFontSize(9); doc.setTextColor(120,120,120);
+        doc.text('No approved claims this period.', margin, empChartTop+15);
+      }
+
+      /* ---- Page: Full employee table, sorted by utilisation ---- */
+      doc.addPage();
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('By Employee - '+periodLabel, margin, 18);
+      var empRows = empSorted.map(function(e){
+        return [e.name, String(e.count), fmtMoney(e.total), fmtMoney(e.allocation), e.pct.toFixed(1)+'%'];
+      });
+      doc.autoTable({
+        startY: 24, margin:{left:margin, right:margin},
+        head:[['Employee','# Claims','Amount Claimed (SGD)','Entitlement (SGD)','Utilisation %']], body: empRows,
+        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+      });
+
+      /* ---- Page: Rejected claims ---- */
+      doc.addPage();
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Rejected Claims - '+periodLabel, margin, 18);
+      if(report.rejectedClaims.length){
+        var rejRows = report.rejectedClaims.map(function(rc){
+          return [rc.employeeName, rc.category, fmtMoney(rc.amount), rc.reason];
+        });
+        doc.autoTable({
+          startY: 24, margin:{left:margin, right:margin},
+          head:[['Employee','Category','Amount (SGD)','Reason']], body: rejRows,
+          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:8},
+          columnStyles:{3:{cellWidth:70}}
+        });
+      } else {
+        doc.setFontSize(10); doc.setTextColor(120,120,120);
+        doc.text('No rejected claims this period.', margin, 30);
+      }
+
+      doc.save('flex-benefits-hr-report-'+y+'-'+String(m+1).padStart(2,'0')+'.pdf');
+    }catch(err){
+      console.error(err);
+      showToast('Could not generate the PDF. Check the console for details.', 'error');
     }
   }
 
@@ -1477,6 +1666,7 @@
       case 'revoke-invite-confirm': return revokeInviteConfirmed(btn.dataset.email);
       case 'remove-benefit': return removeBenefit(btn.dataset.cat);
       case 'export-report': exportReportExcel(); return Promise.resolve();
+      case 'export-report-pdf': exportReportPDF(); return Promise.resolve();
       case 'filter-history': STATE.historyFilter=btn.dataset.filter; render(); return Promise.resolve();
       case 'filter-staff': STATE.staffRoleFilter=btn.dataset.filter; render(); return Promise.resolve();
       default: return Promise.resolve();
