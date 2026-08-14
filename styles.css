@@ -205,3 +205,9 @@
   .banner-danger{background:var(--danger-bg);color:var(--danger);}
   .banner-success{background:var(--success-bg);color:var(--success);}
   .banner-warning{background:var(--warning-bg);color:var(--warning);}
+.login-logo-img{
+  display:block;
+  max-width:160px;
+  height:auto;
+  margin:0 auto 14px;
+}
