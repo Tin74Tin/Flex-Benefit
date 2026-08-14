@@ -967,7 +967,7 @@
         '<select data-action="set-report-month" '+(isYtd?'disabled':'')+'>'+REPORT_MONTH_NAMES.map(function(mn,i){ return '<option value="'+i+'" '+(i===currentMonthValue?'selected':'')+'>'+mn+'</option>'; }).join('')+'</select>'+
         '<select data-action="set-report-year">'+yearOptions.map(function(o){ return '<option value="'+o.value+'" '+(o.value===currentYearValue?'selected':'')+'>'+escapeHtml(o.label)+'</option>'; }).join('')+'</select>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report">Export to Excel</button>'+
-        '<button class="btn btn-ghost btn-sm" data-action="export-report-pdf">Export to PDF</button>'+
+        '<button class="btn btn-ghost btn-sm" data-action="export-report-pdf">Export to PDF for HR</button>'+
       '</div>'+
       '<div class="report-summary">'+escapeHtml(period.label)+' - Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s). '+
         '<strong>'+report.totalRejectedCount+'</strong> submission(s) rejected, totaling <strong>'+fmtMoney(report.totalRejectedAmount)+'</strong>.</div>'+
