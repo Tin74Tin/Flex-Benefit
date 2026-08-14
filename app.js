@@ -49,7 +49,7 @@
     rejectedSearchQuery: '',
     rejectedSortColumn: null,
     rejectedSortDirection: 'desc',
-    reportPeriod: null,
+    reportMonth: null, reportYear: null,
     _realtimeSubscribed: false
   };
 
@@ -287,56 +287,35 @@
 
   var REPORT_MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-  function buildReportPeriodOptions(claims){
+  function buildReportYearOptions(claims){
     var now = new Date();
     var currentYear = now.getFullYear();
-    var currentMonth = now.getMonth();
-    var options = [];
-    for(var i=0;i<=currentMonth;i++){
-      options.push({value:'month:'+currentYear+':'+i, label:REPORT_MONTH_NAMES[i]+' '+currentYear});
-    }
-    options.push({value:'ytd:'+currentYear, label:'Year to Date '+currentYear+' ('+REPORT_MONTH_NAMES[0].slice(0,3)+'-'+REPORT_MONTH_NAMES[currentMonth].slice(0,3)+')'});
+    var options = [{value:String(currentYear), label:String(currentYear)},
+      {value:'ytd', label:'Year to Date '+currentYear+' ('+REPORT_MONTH_NAMES[0].slice(0,3)+'-'+REPORT_MONTH_NAMES[now.getMonth()].slice(0,3)+')'}];
     uniqueYearsFromClaims(claims, currentYear).filter(function(yr){ return yr!==currentYear; }).forEach(function(yr){
-      options.push({value:'year:'+yr, label:String(yr)});
+      options.push({value:String(yr), label:String(yr)});
     });
     return options;
   }
 
-  function resolveReportPeriod(periodStr){
+  function resolveReportPeriod(yearValue, monthValue){
     var now = new Date();
-    if(!periodStr){ periodStr = 'ytd:'+now.getFullYear(); }
-    var parts = periodStr.split(':');
-    var type = parts[0];
-    if(type==='month'){
-      var yr = parseInt(parts[1],10), mo = parseInt(parts[2],10);
+    if(yearValue==='ytd'){
       return {
-        startDate: new Date(yr,mo,1,0,0,0),
-        endDate: new Date(yr,mo+1,0,23,59,59),
-        label: REPORT_MONTH_NAMES[mo]+' '+yr,
-        fileSuffix: yr+'-'+String(mo+1).padStart(2,'0')
+        startDate: new Date(now.getFullYear(),0,1,0,0,0),
+        endDate: now,
+        label: 'Year to Date '+now.getFullYear()+' ('+REPORT_MONTH_NAMES[0].slice(0,3)+'-'+REPORT_MONTH_NAMES[now.getMonth()].slice(0,3)+')',
+        fileSuffix: now.getFullYear()+'-YTD'
       };
     }
-    if(type==='ytd'){
-      var yr2 = parseInt(parts[1],10);
-      var end = (yr2===now.getFullYear()) ? now : new Date(yr2,11,31,23,59,59);
-      return {
-        startDate: new Date(yr2,0,1,0,0,0),
-        endDate: end,
-        label: 'Year to Date '+yr2+' ('+REPORT_MONTH_NAMES[0].slice(0,3)+'-'+REPORT_MONTH_NAMES[end.getMonth()].slice(0,3)+')',
-        fileSuffix: yr2+'-YTD'
-      };
-    }
-    if(type==='year'){
-      var yr3 = parseInt(parts[1],10);
-      return {
-        startDate: new Date(yr3,0,1,0,0,0),
-        endDate: new Date(yr3,11,31,23,59,59),
-        label: String(yr3)+' (Full Year)',
-        fileSuffix: String(yr3)+'-full'
-      };
-    }
-    // Fallback: current month
-    return resolveReportPeriod('month:'+now.getFullYear()+':'+now.getMonth());
+    var yr = parseInt(yearValue,10); if(isNaN(yr)) yr = now.getFullYear();
+    var mo = parseInt(monthValue,10); if(isNaN(mo)) mo = now.getMonth();
+    return {
+      startDate: new Date(yr,mo,1,0,0,0),
+      endDate: new Date(yr,mo+1,0,23,59,59),
+      label: REPORT_MONTH_NAMES[mo]+' '+yr,
+      fileSuffix: yr+'-'+String(mo+1).padStart(2,'0')
+    };
   }
 
   /* =========================================================
@@ -923,10 +902,13 @@
   }
 
   function renderAdminReports(){
-    var period = resolveReportPeriod(STATE.reportPeriod);
+    var now = new Date();
+    var currentYearValue = (STATE.reportYear!=null) ? String(STATE.reportYear) : String(now.getFullYear());
+    var currentMonthValue = (STATE.reportMonth!=null) ? STATE.reportMonth : now.getMonth();
+    var period = resolveReportPeriod(currentYearValue, currentMonthValue);
     var report = buildPeriodReport(STATE.claims, period.startDate, period.endDate);
-    var periodOptions = buildReportPeriodOptions(STATE.claims);
-    var currentPeriodValue = STATE.reportPeriod || periodOptions.filter(function(o){ return o.value.indexOf('ytd:')===0; })[0].value;
+    var yearOptions = buildReportYearOptions(STATE.claims);
+    var isYtd = currentYearValue==='ytd';
     var searchQuery = (STATE.reportSearchQuery||'').trim().toLowerCase();
     var matchedCategories = searchQuery ? STATE.benefits.filter(function(b){ return b.toLowerCase().indexOf(searchQuery)!==-1; }) : [];
     var categoryScoped = matchedCategories.length > 0;
@@ -980,9 +962,10 @@
     }).join('');
 
     return ''+
-    '<div class="card"><div class="card-title">Utilisation Report</div>'+
+    '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
       '<div class="report-controls">'+
-        '<select data-action="set-report-period">'+periodOptions.map(function(o){ return '<option value="'+o.value+'" '+(o.value===currentPeriodValue?'selected':'')+'>'+escapeHtml(o.label)+'</option>'; }).join('')+'</select>'+
+        '<select data-action="set-report-month" '+(isYtd?'disabled':'')+'>'+REPORT_MONTH_NAMES.map(function(mn,i){ return '<option value="'+i+'" '+(i===currentMonthValue?'selected':'')+'>'+mn+'</option>'; }).join('')+'</select>'+
+        '<select data-action="set-report-year">'+yearOptions.map(function(o){ return '<option value="'+o.value+'" '+(o.value===currentYearValue?'selected':'')+'>'+escapeHtml(o.label)+'</option>'; }).join('')+'</select>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report">Export to Excel</button>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report-pdf">Export to PDF</button>'+
       '</div>'+
@@ -1042,7 +1025,10 @@
 
   function exportReportExcel(){
     if(typeof XLSX==='undefined'){ showToast('Excel export library did not load (needs an internet connection).', 'error'); return; }
-    var period = resolveReportPeriod(STATE.reportPeriod);
+    var now = new Date();
+    var yearValue = (STATE.reportYear!=null) ? String(STATE.reportYear) : String(now.getFullYear());
+    var monthValue = (STATE.reportMonth!=null) ? STATE.reportMonth : now.getMonth();
+    var period = resolveReportPeriod(yearValue, monthValue);
     var report = buildPeriodReport(STATE.claims, period.startDate, period.endDate);
 
     var summaryData = [['Utilisation Report'],[period.label],[],
@@ -1080,7 +1066,10 @@
 
   function exportReportPDF(){
     if(typeof window.jspdf==='undefined' || !window.jspdf.jsPDF){ showToast('PDF export library did not load (needs an internet connection).', 'error'); return; }
-    var period = resolveReportPeriod(STATE.reportPeriod);
+    var now = new Date();
+    var yearValue = (STATE.reportYear!=null) ? String(STATE.reportYear) : String(now.getFullYear());
+    var monthValue = (STATE.reportMonth!=null) ? STATE.reportMonth : now.getMonth();
+    var period = resolveReportPeriod(yearValue, monthValue);
     var report = buildPeriodReport(STATE.claims, period.startDate, period.endDate);
     var periodLabel = period.label;
     var employees = STATE.profiles.filter(function(p){ return p.role==='user'; });
@@ -1753,7 +1742,8 @@
     switch(action){
       case 'change-role': return changeRole(target.dataset.id, target.value);
       case 'reject-reason-select': toggleOtherReasonField(target); return Promise.resolve();
-      case 'set-report-period': STATE.reportPeriod = target.value; render(); return Promise.resolve();
+      case 'set-report-month': STATE.reportMonth = parseInt(target.value,10); render(); return Promise.resolve();
+      case 'set-report-year': STATE.reportYear = (target.value==='ytd') ? 'ytd' : parseInt(target.value,10); render(); return Promise.resolve();
       default: return Promise.resolve();
     }
   }
