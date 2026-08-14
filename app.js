@@ -49,7 +49,7 @@
     rejectedSearchQuery: '',
     rejectedSortColumn: null,
     rejectedSortDirection: 'desc',
-    reportMonth: null, reportYear: null,
+    reportPeriod: null,
     _realtimeSubscribed: false
   };
 
@@ -233,13 +233,13 @@
     return {allocation:allocation, approvedTotal:approvedTotal, pendingTotal:pendingTotal, available:available, utilizationPct:utilizationPct, byCategory:byCategory, year:currentYear};
   }
 
-  function buildMonthlyReport(claims, year, month){
-    var inMonth = function(c){
+  function buildPeriodReport(claims, startDate, endDate){
+    var inRange = function(c){
       var d = new Date(c.receipt_date+'T00:00:00');
-      return d.getFullYear()===year && d.getMonth()===month;
+      return d>=startDate && d<=endDate;
     };
-    var approved = claims.filter(function(c){ return c.status==='approved' && inMonth(c); });
-    var rejected = claims.filter(function(c){ return c.status==='rejected' && inMonth(c); });
+    var approved = claims.filter(function(c){ return c.status==='approved' && inRange(c); });
+    var rejected = claims.filter(function(c){ return c.status==='rejected' && inRange(c); });
 
     var byCategory={}, byEmployee={}, totalClaimed=0;
     approved.forEach(function(c){
@@ -283,6 +283,60 @@
     var years = {}; years[currentYear]=true;
     claims.forEach(function(c){ if(c.receipt_date){ years[new Date(c.receipt_date+'T00:00:00').getFullYear()]=true; } });
     return Object.keys(years).map(Number).sort(function(a,b){ return b-a; });
+  }
+
+  var REPORT_MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+  function buildReportPeriodOptions(claims){
+    var now = new Date();
+    var currentYear = now.getFullYear();
+    var currentMonth = now.getMonth();
+    var options = [];
+    for(var i=0;i<=currentMonth;i++){
+      options.push({value:'month:'+currentYear+':'+i, label:REPORT_MONTH_NAMES[i]+' '+currentYear});
+    }
+    options.push({value:'ytd:'+currentYear, label:'Year to Date '+currentYear+' ('+REPORT_MONTH_NAMES[0].slice(0,3)+'-'+REPORT_MONTH_NAMES[currentMonth].slice(0,3)+')'});
+    uniqueYearsFromClaims(claims, currentYear).filter(function(yr){ return yr!==currentYear; }).forEach(function(yr){
+      options.push({value:'year:'+yr, label:String(yr)});
+    });
+    return options;
+  }
+
+  function resolveReportPeriod(periodStr){
+    var now = new Date();
+    if(!periodStr){ periodStr = 'ytd:'+now.getFullYear(); }
+    var parts = periodStr.split(':');
+    var type = parts[0];
+    if(type==='month'){
+      var yr = parseInt(parts[1],10), mo = parseInt(parts[2],10);
+      return {
+        startDate: new Date(yr,mo,1,0,0,0),
+        endDate: new Date(yr,mo+1,0,23,59,59),
+        label: REPORT_MONTH_NAMES[mo]+' '+yr,
+        fileSuffix: yr+'-'+String(mo+1).padStart(2,'0')
+      };
+    }
+    if(type==='ytd'){
+      var yr2 = parseInt(parts[1],10);
+      var end = (yr2===now.getFullYear()) ? now : new Date(yr2,11,31,23,59,59);
+      return {
+        startDate: new Date(yr2,0,1,0,0,0),
+        endDate: end,
+        label: 'Year to Date '+yr2+' ('+REPORT_MONTH_NAMES[0].slice(0,3)+'-'+REPORT_MONTH_NAMES[end.getMonth()].slice(0,3)+')',
+        fileSuffix: yr2+'-YTD'
+      };
+    }
+    if(type==='year'){
+      var yr3 = parseInt(parts[1],10);
+      return {
+        startDate: new Date(yr3,0,1,0,0,0),
+        endDate: new Date(yr3,11,31,23,59,59),
+        label: String(yr3)+' (Full Year)',
+        fileSuffix: String(yr3)+'-full'
+      };
+    }
+    // Fallback: current month
+    return resolveReportPeriod('month:'+now.getFullYear()+':'+now.getMonth());
   }
 
   /* =========================================================
@@ -869,12 +923,10 @@
   }
 
   function renderAdminReports(){
-    var now = new Date();
-    var y = STATE.reportYear || now.getFullYear();
-    var m = (STATE.reportMonth!=null) ? STATE.reportMonth : now.getMonth();
-    var report = buildMonthlyReport(STATE.claims, y, m);
-    var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    var years = uniqueYearsFromClaims(STATE.claims, now.getFullYear());
+    var period = resolveReportPeriod(STATE.reportPeriod);
+    var report = buildPeriodReport(STATE.claims, period.startDate, period.endDate);
+    var periodOptions = buildReportPeriodOptions(STATE.claims);
+    var currentPeriodValue = STATE.reportPeriod || periodOptions.filter(function(o){ return o.value.indexOf('ytd:')===0; })[0].value;
     var searchQuery = (STATE.reportSearchQuery||'').trim().toLowerCase();
     var matchedCategories = searchQuery ? STATE.benefits.filter(function(b){ return b.toLowerCase().indexOf(searchQuery)!==-1; }) : [];
     var categoryScoped = matchedCategories.length > 0;
@@ -928,14 +980,13 @@
     }).join('');
 
     return ''+
-    '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
+    '<div class="card"><div class="card-title">Utilisation Report</div>'+
       '<div class="report-controls">'+
-        '<select data-action="set-report-month">'+monthNames.map(function(mn,i){ return '<option value="'+i+'" '+(i===m?'selected':'')+'>'+mn+'</option>'; }).join('')+'</select>'+
-        '<select data-action="set-report-year">'+years.map(function(yr){ return '<option value="'+yr+'" '+(yr===y?'selected':'')+'>'+yr+'</option>'; }).join('')+'</select>'+
+        '<select data-action="set-report-period">'+periodOptions.map(function(o){ return '<option value="'+o.value+'" '+(o.value===currentPeriodValue?'selected':'')+'>'+escapeHtml(o.label)+'</option>'; }).join('')+'</select>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report">Export to Excel</button>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report-pdf">Export to PDF</button>'+
       '</div>'+
-      '<div class="report-summary">Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s). '+
+      '<div class="report-summary">'+escapeHtml(period.label)+' - Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s). '+
         '<strong>'+report.totalRejectedCount+'</strong> submission(s) rejected, totaling <strong>'+fmtMoney(report.totalRejectedAmount)+'</strong>.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">By Employee</div>'+
@@ -991,13 +1042,10 @@
 
   function exportReportExcel(){
     if(typeof XLSX==='undefined'){ showToast('Excel export library did not load (needs an internet connection).', 'error'); return; }
-    var now = new Date();
-    var y = STATE.reportYear || now.getFullYear();
-    var m = (STATE.reportMonth!=null) ? STATE.reportMonth : now.getMonth();
-    var report = buildMonthlyReport(STATE.claims, y, m);
-    var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    var period = resolveReportPeriod(STATE.reportPeriod);
+    var report = buildPeriodReport(STATE.claims, period.startDate, period.endDate);
 
-    var summaryData = [['Monthly Utilisation Report'],[monthNames[m]+' '+y],[],
+    var summaryData = [['Utilisation Report'],[period.label],[],
       ['Total Claimed (Approved)', Number(report.totalClaimed.toFixed(2))],
       ['Total Submissions', report.totalCount],
       ['Total Rejected Submissions', report.totalRejectedCount],
@@ -1023,7 +1071,7 @@
       XLSX.utils.book_append_sheet(wb, wsCat, 'By Category');
       XLSX.utils.book_append_sheet(wb, wsEmp, 'By Employee');
       XLSX.utils.book_append_sheet(wb, wsRej, 'Rejected Claims');
-      XLSX.writeFile(wb, 'utilisation-report-'+y+'-'+String(m+1).padStart(2,'0')+'.xlsx');
+      XLSX.writeFile(wb, 'utilisation-report-'+period.fileSuffix+'.xlsx');
     }catch(err){
       console.error(err);
       showToast('Something went wrong building the Excel file.', 'error');
@@ -1032,12 +1080,9 @@
 
   function exportReportPDF(){
     if(typeof window.jspdf==='undefined' || !window.jspdf.jsPDF){ showToast('PDF export library did not load (needs an internet connection).', 'error'); return; }
-    var now = new Date();
-    var y = STATE.reportYear || now.getFullYear();
-    var m = (STATE.reportMonth!=null) ? STATE.reportMonth : now.getMonth();
-    var report = buildMonthlyReport(STATE.claims, y, m);
-    var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    var periodLabel = monthNames[m]+' '+y;
+    var period = resolveReportPeriod(STATE.reportPeriod);
+    var report = buildPeriodReport(STATE.claims, period.startDate, period.endDate);
+    var periodLabel = period.label;
     var employees = STATE.profiles.filter(function(p){ return p.role==='user'; });
 
     var empStats = employees.map(function(p){
@@ -1182,7 +1227,7 @@
         doc.text('No rejected claims this period.', margin, 30);
       }
 
-      doc.save('flex-benefits-hr-report-'+y+'-'+String(m+1).padStart(2,'0')+'.pdf');
+      doc.save('flex-benefits-hr-report-'+period.fileSuffix+'.pdf');
     }catch(err){
       console.error(err);
       showToast('Could not generate the PDF. Check the console for details.', 'error');
@@ -1708,8 +1753,7 @@
     switch(action){
       case 'change-role': return changeRole(target.dataset.id, target.value);
       case 'reject-reason-select': toggleOtherReasonField(target); return Promise.resolve();
-      case 'set-report-month': STATE.reportMonth = parseInt(target.value,10); render(); return Promise.resolve();
-      case 'set-report-year': STATE.reportYear = parseInt(target.value,10); render(); return Promise.resolve();
+      case 'set-report-period': STATE.reportPeriod = target.value; render(); return Promise.resolve();
       default: return Promise.resolve();
     }
   }
