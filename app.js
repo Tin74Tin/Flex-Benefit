@@ -44,6 +44,11 @@
     historySearchQuery: '',
     allSubmissionsSearchQuery: '',
     reportSearchQuery: '',
+    reportSortColumn: null,
+    reportSortDirection: 'desc',
+    rejectedSearchQuery: '',
+    rejectedSortColumn: null,
+    rejectedSortDirection: 'desc',
     reportMonth: null, reportYear: null,
     _realtimeSubscribed: false
   };
@@ -250,22 +255,28 @@
     });
 
     var totalRejected = 0;
+    var byEmployeeRejected = {};
     var rejectedClaims = rejected.map(function(c){
       var amt = sgdAmountOf(c);
       totalRejected += amt;
       var reasonText = c.reject_reason || '';
       if(c.admin_note){ reasonText += (reasonText ? ' - ' : '') + c.admin_note; }
+      reasonText = reasonText || 'No reason given';
+      byEmployeeRejected[c.employee_id] = byEmployeeRejected[c.employee_id]||{name:employeeName(c.employee_id),count:0,total:0,reasons:{}};
+      byEmployeeRejected[c.employee_id].count++;
+      byEmployeeRejected[c.employee_id].total+=amt;
+      byEmployeeRejected[c.employee_id].reasons[reasonText] = (byEmployeeRejected[c.employee_id].reasons[reasonText]||0)+1;
       return {
         employeeId: c.employee_id,
         employeeName: employeeName(c.employee_id),
         category: c.category,
         amount: amt,
-        reason: reasonText || 'No reason given'
+        reason: reasonText
       };
     });
 
     return {byCategory:byCategory, byEmployee:byEmployee, totalClaimed:totalClaimed, totalCount:approved.length,
-      rejectedClaims:rejectedClaims, totalRejectedCount:rejected.length, totalRejectedAmount:totalRejected};
+      rejectedClaims:rejectedClaims, byEmployeeRejected:byEmployeeRejected, totalRejectedCount:rejected.length, totalRejectedAmount:totalRejected};
   }
 
   function uniqueYearsFromClaims(claims, currentYear){
@@ -845,6 +856,18 @@
       '<div class="field-hint">Password resets are self-service - employees use "Forgot password?" on the login screen.</div></div>';
   }
 
+  function sortArrow(col, activeCol, dir){
+    if(col!==activeCol) return '';
+    return dir==='asc' ? ' &uarr;' : ' &darr;';
+  }
+  function sortRows(rows, column, direction, getters){
+    if(!column || !getters[column]) return rows;
+    var getter = getters[column];
+    var sorted = rows.slice().sort(function(a,b){ return getter(a)-getter(b); });
+    if(direction==='desc') sorted.reverse();
+    return sorted;
+  }
+
   function renderAdminReports(){
     var now = new Date();
     var y = STATE.reportYear || now.getFullYear();
@@ -856,7 +879,7 @@
     var matchedCategories = searchQuery ? STATE.benefits.filter(function(b){ return b.toLowerCase().indexOf(searchQuery)!==-1; }) : [];
     var categoryScoped = matchedCategories.length > 0;
 
-    var empRows = STATE.profiles.filter(function(p){ return p.role==='user'; }).map(function(p){
+    var empRowData = STATE.profiles.filter(function(p){ return p.role==='user'; }).map(function(p){
       var r = report.byEmployee[p.id]||{count:0,total:0,categories:{}};
       var allCatKeys = Object.keys(r.categories||{});
       var nameMatches = searchQuery && p.name.toLowerCase().indexOf(searchQuery)!==-1;
@@ -874,15 +897,34 @@
       var catBreakdown = showCatKeys.length
         ? showCatKeys.map(function(cat){ return escapeHtml(cat)+': '+fmtMoney(row.r.categories[cat].total); }).join(', ')
         : '-';
-      return '<tr><td>'+escapeHtml(row.p.name)+'</td><td>'+displayCount+'</td><td>'+fmtMoney(displayTotal)+'</td><td>'+fmtMoney(row.p.annual_allocation)+'</td><td>'+pct.toFixed(1)+'%</td><td class="tiny">'+catBreakdown+'</td></tr>';
+      return {name:row.p.name, count:displayCount, total:displayTotal, allocation:row.p.annual_allocation, pct:pct, catBreakdown:catBreakdown};
+    });
+    empRowData = sortRows(empRowData, STATE.reportSortColumn, STATE.reportSortDirection, {
+      count: function(r){ return r.count; }, total: function(r){ return r.total; },
+      allocation: function(r){ return r.allocation; }, pct: function(r){ return r.pct; }
+    });
+    var empRows = empRowData.map(function(r){
+      return '<tr><td>'+escapeHtml(r.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td>'+fmtMoney(r.allocation)+'</td><td>'+r.pct.toFixed(1)+'%</td><td class="tiny">'+r.catBreakdown+'</td></tr>';
     }).join('');
 
-    var rejectedRows = report.rejectedClaims.filter(function(rc){
-      if(!searchQuery) return true;
-      if(rc.employeeName.toLowerCase().indexOf(searchQuery)!==-1) return true;
-      return rc.category.toLowerCase().indexOf(searchQuery)!==-1;
-    }).map(function(rc){
-      return '<tr><td>'+escapeHtml(rc.employeeName)+'</td><td>'+escapeHtml(rc.category)+'</td><td>'+fmtMoney(rc.amount)+'</td><td>'+escapeHtml(rc.reason)+'</td></tr>';
+    var rejSearchQuery = (STATE.rejectedSearchQuery||'').trim().toLowerCase();
+    var rejRowData = Object.keys(report.byEmployeeRejected).map(function(empId){
+      var r = report.byEmployeeRejected[empId];
+      var reasonBreakdown = Object.keys(r.reasons).map(function(reason){
+        var n = r.reasons[reason];
+        return escapeHtml(reason)+(n>1 ? ' x'+n : '');
+      }).join(', ');
+      return {name:r.name, count:r.count, total:r.total, reasonBreakdown:reasonBreakdown};
+    }).filter(function(row){
+      if(!rejSearchQuery) return true;
+      if(row.name.toLowerCase().indexOf(rejSearchQuery)!==-1) return true;
+      return row.reasonBreakdown.toLowerCase().indexOf(rejSearchQuery)!==-1;
+    });
+    rejRowData = sortRows(rejRowData, STATE.rejectedSortColumn, STATE.rejectedSortDirection, {
+      count: function(r){ return r.count; }, total: function(r){ return r.total; }
+    });
+    var rejectedRows = rejRowData.map(function(r){
+      return '<tr><td>'+escapeHtml(r.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td class="tiny">'+r.reasonBreakdown+'</td></tr>';
     }).join('');
 
     return ''+
@@ -899,11 +941,20 @@
       '<input type="text" id="report-search-input" class="search-input" placeholder="Search by employee name or benefit category..." value="'+escapeHtml(STATE.reportSearchQuery||'')+'" style="margin-bottom:12px;" />'+
       (categoryScoped ? '<div class="muted small" style="margin-bottom:10px;">Showing # Claims and Amount Claimed for '+matchedCategories.map(escapeHtml).join(', ')+' only.</div>' : '')+
       '<div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Employee</th><th># Claims</th><th>Amount Claimed</th><th>Entitlement (SGD)</th><th>Utilisation %</th><th>Category Breakdown</th></tr></thead><tbody>'+empRows+'</tbody></table></div>'+
+      '<thead><tr><th>Employee</th>'+
+        '<th class="sortable-th" data-action="sort-report-emp" data-column="count"># Claims'+sortArrow('count',STATE.reportSortColumn,STATE.reportSortDirection)+'</th>'+
+        '<th class="sortable-th" data-action="sort-report-emp" data-column="total">Amount Claimed'+sortArrow('total',STATE.reportSortColumn,STATE.reportSortDirection)+'</th>'+
+        '<th class="sortable-th" data-action="sort-report-emp" data-column="allocation">Entitlement (SGD)'+sortArrow('allocation',STATE.reportSortColumn,STATE.reportSortDirection)+'</th>'+
+        '<th class="sortable-th" data-action="sort-report-emp" data-column="pct">Utilisation %'+sortArrow('pct',STATE.reportSortColumn,STATE.reportSortDirection)+'</th>'+
+        '<th>Category Breakdown</th></tr></thead><tbody>'+empRows+'</tbody></table></div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Rejected Claims</div>'+
+      '<input type="text" id="rejected-search-input" class="search-input" placeholder="Search by employee name or reason..." value="'+escapeHtml(STATE.rejectedSearchQuery||'')+'" style="margin-bottom:12px;" />'+
       (rejectedRows ? '<div class="table-wrap"><table class="data-table">'+
-        '<thead><tr><th>Employee</th><th>Category</th><th>Amount</th><th>Reason</th></tr></thead><tbody>'+rejectedRows+'</tbody></table></div>'
+        '<thead><tr><th>Employee</th>'+
+          '<th class="sortable-th" data-action="sort-report-rejected" data-column="count"># Claims Rejected'+sortArrow('count',STATE.rejectedSortColumn,STATE.rejectedSortDirection)+'</th>'+
+          '<th class="sortable-th" data-action="sort-report-rejected" data-column="total">Amount Rejected'+sortArrow('total',STATE.rejectedSortColumn,STATE.rejectedSortDirection)+'</th>'+
+          '<th>Reasons</th></tr></thead><tbody>'+rejectedRows+'</tbody></table></div>'
         : '<div class="empty-state">No rejected claims for this period.</div>')+
     '</div>';
   }
@@ -923,11 +974,11 @@
       ['Total Rejected Amount', Number(report.totalRejectedAmount.toFixed(2))]];
     var catData = [['Category','Number of Claims','Amount Claimed']];
     STATE.benefits.forEach(function(b){ var r=report.byCategory[b]||{count:0,total:0}; catData.push([b, r.count, Number(r.total.toFixed(2))]); });
-    var empData = [['Employee','Number of Claims','Amount Claimed','Entitlement (SGD)','Utilisation %']];
+    var empData = [['Employee','PayNow Mobile','Number of Claims','Amount Claimed','Entitlement (SGD)','Utilisation %']];
     STATE.profiles.filter(function(p){ return p.role==='user'; }).forEach(function(p){
       var r = report.byEmployee[p.id]||{count:0,total:0};
       var pct = p.annual_allocation>0 ? (r.total/p.annual_allocation*100) : 0;
-      empData.push([p.name, r.count, Number(r.total.toFixed(2)), Number(p.annual_allocation), Number(pct.toFixed(1))]);
+      empData.push([p.name, p.paynow_mobile||'', r.count, Number(r.total.toFixed(2)), Number(p.annual_allocation), Number(pct.toFixed(1))]);
     });
     var rejData = [['Employee','Category','Amount','Reason']];
     report.rejectedClaims.forEach(function(rc){ rejData.push([rc.employeeName, rc.category, Number(rc.amount.toFixed(2)), rc.reason]); });
@@ -936,7 +987,7 @@
       var wb = XLSX.utils.book_new();
       var wsSummary = XLSX.utils.aoa_to_sheet(summaryData); wsSummary['!cols']=[{wch:28},{wch:16}];
       var wsCat = XLSX.utils.aoa_to_sheet(catData); wsCat['!cols']=[{wch:24},{wch:16},{wch:14}];
-      var wsEmp = XLSX.utils.aoa_to_sheet(empData); wsEmp['!cols']=[{wch:24},{wch:16},{wch:14},{wch:16},{wch:14}];
+      var wsEmp = XLSX.utils.aoa_to_sheet(empData); wsEmp['!cols']=[{wch:24},{wch:16},{wch:14},{wch:14},{wch:16},{wch:14}];
       var wsRej = XLSX.utils.aoa_to_sheet(rejData); wsRej['!cols']=[{wch:24},{wch:18},{wch:12},{wch:40}];
       XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
       XLSX.utils.book_append_sheet(wb, wsCat, 'By Category');
@@ -1411,6 +1462,18 @@
       case 'delete-profile-confirm': return deletePermanently(id);
       case 'revoke-invite': STATE.confirmRevokeInvite=btn.dataset.email; render(); return Promise.resolve();
       case 'revoke-invite-cancel': STATE.confirmRevokeInvite=null; render(); return Promise.resolve();
+      case 'sort-report-emp': {
+        var col = btn.dataset.column;
+        if(STATE.reportSortColumn===col){ STATE.reportSortDirection = STATE.reportSortDirection==='desc'?'asc':'desc'; }
+        else { STATE.reportSortColumn = col; STATE.reportSortDirection = 'desc'; }
+        render(); return Promise.resolve();
+      }
+      case 'sort-report-rejected': {
+        var rcol = btn.dataset.column;
+        if(STATE.rejectedSortColumn===rcol){ STATE.rejectedSortDirection = STATE.rejectedSortDirection==='desc'?'asc':'desc'; }
+        else { STATE.rejectedSortColumn = rcol; STATE.rejectedSortDirection = 'desc'; }
+        render(); return Promise.resolve();
+      }
       case 'revoke-invite-confirm': return revokeInviteConfirmed(btn.dataset.email);
       case 'remove-benefit': return removeBenefit(btn.dataset.cat);
       case 'export-report': exportReportExcel(); return Promise.resolve();
@@ -1538,6 +1601,8 @@
       scheduleSearchFilter(t, 'allSubmissionsSearchQuery');
     } else if(t.id==='report-search-input'){
       scheduleSearchFilter(t, 'reportSearchQuery');
+    } else if(t.id==='rejected-search-input'){
+      scheduleSearchFilter(t, 'rejectedSearchQuery');
     }
   }
 
