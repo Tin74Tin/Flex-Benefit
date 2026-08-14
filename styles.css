@@ -109,6 +109,8 @@
   .dropzone input[type=file]{display:block;margin:0 auto 6px;max-width:100%;}
   .dropzone-hint{font-size:11.5px;color:var(--text-muted);text-transform:none;font-weight:500;letter-spacing:0;}
   .search-input{width:100%;padding:10px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);font-size:14px;color:var(--text);}
+  .sortable-th{cursor:pointer;user-select:none;}
+  .sortable-th:hover{color:var(--primary);}
   .search-input:focus{outline:2px solid var(--primary);outline-offset:1px;}
 
   /* ---------- Buttons ---------- */
