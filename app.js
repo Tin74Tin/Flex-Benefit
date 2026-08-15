@@ -50,6 +50,9 @@
     rejectedSortColumn: null,
     rejectedSortDirection: 'desc',
     reportMonth: null, reportYear: null,
+    invoiceYear: null,
+    editingInvoiceRate: false,
+    appSettings: {},
     _realtimeSubscribed: false
   };
 
@@ -279,6 +282,79 @@
       rejectedClaims:rejectedClaims, byEmployeeRejected:byEmployeeRejected, totalRejectedCount:rejected.length, totalRejectedAmount:totalRejected};
   }
 
+  /* =========================================================
+     ANNUAL INVOICE (Headcount Adjustment + Unutilised Credit Note)
+     Principle: adjustment = (headcount at 31 Dec - headcount at 1 Jan) / 2,
+     charged (or credited if negative) at the configured rate per head per year.
+     Any amount not utilised by employees for the year is credited back via
+     credit note, as is any negative headcount adjustment. Net amount =
+     additional headcount charge minus total credit note.
+  ========================================================== */
+  function getInvoiceRate(){
+    var n = parseFloat(STATE.appSettings && STATE.appSettings.invoice_rate_per_head);
+    return isNaN(n) ? 88 : n;
+  }
+
+  function buildInvoiceYearOptions(){
+    var now = new Date();
+    var years = {};
+    years[now.getFullYear()] = true;
+    years[now.getFullYear()-1] = true;
+    STATE.profiles.forEach(function(p){ if(p.date_of_joining){ years[parseInt(p.date_of_joining.slice(0,4),10)]=true; } });
+    STATE.claims.forEach(function(c){ if(c.receipt_date){ years[parseInt(c.receipt_date.slice(0,4),10)]=true; } });
+    return Object.keys(years).map(Number).sort(function(a,b){ return b-a; });
+  }
+
+  function computeAnnualInvoice(year){
+    var startStr = year+'-01-01';
+    var endStr = year+'-12-31';
+    var rate = getInvoiceRate();
+
+    var headcountAt = function(dateStr){
+      return STATE.profiles.filter(function(p){
+        return p.role==='user' && p.date_of_joining && p.date_of_joining<=dateStr &&
+          (!p.date_of_termination || p.date_of_termination>=dateStr);
+      }).length;
+    };
+    var startHeadcount = headcountAt(startStr);
+    var endHeadcount = headcountAt(endStr);
+    var headcountDelta = endHeadcount - startHeadcount;
+    var adjustmentUnits = headcountDelta/2;
+    var adjustmentAmount = adjustmentUnits * rate;
+    var additionalCharge = Math.max(adjustmentAmount, 0);
+    var headcountCredit = Math.max(-adjustmentAmount, 0);
+
+    var employeesInYear = STATE.profiles.filter(function(p){
+      return p.role==='user' && p.date_of_joining && p.date_of_joining<=endStr &&
+        (!p.date_of_termination || p.date_of_termination>=startStr);
+    });
+    var totalEntitlementPool=0, totalApprovedForYear=0;
+    var unutilizedByEmployee = employeesInYear.map(function(p){
+      var approved = STATE.claims.filter(function(c){
+        return c.employee_id===p.id && c.status==='approved' &&
+          c.receipt_date && c.receipt_date>=startStr && c.receipt_date<=endStr;
+      }).reduce(function(s,c){ return s+sgdAmountOf(c); }, 0);
+      var allocation = Number(p.annual_allocation)||0;
+      var unutilized = Math.max(0, allocation-approved);
+      totalEntitlementPool += allocation;
+      totalApprovedForYear += approved;
+      return {name:p.name, allocation:allocation, approved:approved, unutilized:unutilized};
+    }).sort(function(a,b){ return b.unutilized-a.unutilized; });
+    var totalUnutilized = unutilizedByEmployee.reduce(function(s,e){ return s+e.unutilized; }, 0);
+
+    var creditNoteAmount = totalUnutilized + headcountCredit;
+    var netAmount = additionalCharge - creditNoteAmount;
+
+    return {
+      year:year, rate:rate, startHeadcount:startHeadcount, endHeadcount:endHeadcount,
+      headcountDelta:headcountDelta, adjustmentUnits:adjustmentUnits, adjustmentAmount:adjustmentAmount,
+      additionalCharge:additionalCharge, headcountCredit:headcountCredit,
+      totalEntitlementPool:totalEntitlementPool, totalApprovedForYear:totalApprovedForYear,
+      totalUnutilized:totalUnutilized, unutilizedByEmployee:unutilizedByEmployee,
+      creditNoteAmount:creditNoteAmount, netAmount:netAmount
+    };
+  }
+
   function uniqueYearsFromClaims(claims, currentYear){
     var years = {}; years[currentYear]=true;
     claims.forEach(function(c){ if(c.receipt_date){ years[new Date(c.receipt_date+'T00:00:00').getFullYear()]=true; } });
@@ -346,6 +422,7 @@
     if(isAdmin){
       calls.push(supabase.from('profiles').select('*').order('name'));
       calls.push(supabase.from('invites').select('*').order('created_at', {ascending:false}));
+      calls.push(supabase.from('app_settings').select('*'));
     }
     return Promise.all(calls).then(function(results){
       STATE.benefits = (results[0].data||[]).map(function(b){ return b.name; });
@@ -355,6 +432,8 @@
       if(isAdmin){
         STATE.profiles = results[4].data || [];
         STATE.invites = results[5].data || [];
+        STATE.appSettings = {};
+        (results[6].data||[]).forEach(function(s){ STATE.appSettings[s.key] = s.value; });
       } else {
         STATE.profiles = STATE.profile ? [STATE.profile] : [];
         STATE.invites = [];
@@ -365,7 +444,7 @@
   function subscribeRealtime(){
     if(STATE._realtimeSubscribed || !supabase) return;
     STATE._realtimeSubscribed = true;
-    ['claims','benefits','notifications','profiles'].forEach(function(table){
+    ['claims','benefits','notifications','profiles','app_settings'].forEach(function(table){
       supabase.channel(table+'-rt')
         .on('postgres_changes', {event:'*', schema:'public', table:table}, handleRealtimeChange)
         .subscribe();
@@ -901,6 +980,56 @@
     return sorted;
   }
 
+  function renderAdminInvoice(){
+    var now = new Date();
+    var year = (STATE.invoiceYear!=null) ? STATE.invoiceYear : (now.getFullYear()-1);
+    var yearOptions = buildInvoiceYearOptions();
+    var inv = computeAnnualInvoice(year);
+    var invoiceDate = '2 Jan '+(year+1);
+    var adjustmentLabel = inv.adjustmentAmount>=0 ? 'Additional Headcount Charge' : 'Headcount Reduction Credit';
+
+    var rateCell = STATE.editingInvoiceRate
+      ? '<input type="number" min="0" step="0.01" style="width:110px" id="invoice-rate-input" value="'+inv.rate+'"/> <button class="btn btn-sm btn-primary" data-action="save-invoice-rate">Save</button>'
+      : fmtMoney(inv.rate)+' per employee per year <button class="link-btn" data-action="edit-invoice-rate">Edit</button>';
+
+    var empRows = inv.unutilizedByEmployee.map(function(e){
+      return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtMoney(e.allocation)+'</td><td>'+fmtMoney(e.approved)+'</td><td>'+fmtMoney(e.unutilized)+'</td></tr>';
+    }).join('');
+
+    return '<div class="card"><div class="card-title">Annual Invoice - Headcount Adjustment &amp; Credit Note</div>'+
+      '<div class="report-controls">'+
+        '<select data-action="set-invoice-year">'+yearOptions.map(function(y){ return '<option value="'+y+'" '+(y===year?'selected':'')+'>'+y+'</option>'; }).join('')+'</select>'+
+        '<button class="btn btn-ghost btn-sm" data-action="export-invoice-pdf">Export Invoice to PDF</button>'+
+      '</div>'+
+      '<div class="field-hint" style="margin:10px 0;">Charge per Headcount per Year: '+rateCell+'</div>'+
+      '<div class="report-summary">Invoice period: 1 Jan '+year+' - 31 Dec '+year+'. Invoice date: '+invoiceDate+'.</div>'+
+      '<div class="table-wrap" style="margin-top:12px;"><table class="data-table"><tbody>'+
+        '<tr><td>Headcount as at 1 Jan '+year+'</td><td>'+inv.startHeadcount+'</td></tr>'+
+        '<tr><td>Headcount as at 31 Dec '+year+'</td><td>'+inv.endHeadcount+'</td></tr>'+
+        '<tr><td>Net Change</td><td>'+inv.headcountDelta+'</td></tr>'+
+        '<tr><td>Adjustment Units (Net Change &divide; 2)</td><td>'+inv.adjustmentUnits+'</td></tr>'+
+        '<tr><td>Rate per Headcount</td><td>'+fmtMoney(inv.rate)+'</td></tr>'+
+        '<tr><td><strong>'+adjustmentLabel+'</strong></td><td><strong>'+fmtMoney(Math.abs(inv.adjustmentAmount))+'</strong></td></tr>'+
+      '</tbody></table></div>'+
+      '<div class="table-wrap" style="margin-top:12px;"><table class="data-table"><tbody>'+
+        '<tr><td>Total Entitlement Pool for '+year+'</td><td>'+fmtMoney(inv.totalEntitlementPool)+'</td></tr>'+
+        '<tr><td>Total Approved Claims for '+year+'</td><td>'+fmtMoney(inv.totalApprovedForYear)+'</td></tr>'+
+        '<tr><td><strong>Unutilised Benefit (Credit Note)</strong></td><td><strong>'+fmtMoney(inv.totalUnutilized)+'</strong></td></tr>'+
+      '</tbody></table></div>'+
+      '<div class="table-wrap" style="margin-top:12px;"><table class="data-table"><tbody>'+
+        '<tr><td>Additional Headcount Charge</td><td>'+fmtMoney(inv.additionalCharge)+'</td></tr>'+
+        '<tr><td>Less: Credit Note (Unutilised + Headcount Reduction)</td><td>-'+fmtMoney(inv.creditNoteAmount)+'</td></tr>'+
+        '<tr><td><strong>'+(inv.netAmount>=0?'Net Amount Due':'Net Credit Balance')+'</strong></td><td><strong>'+fmtMoney(Math.abs(inv.netAmount))+'</strong></td></tr>'+
+      '</tbody></table></div>'+
+      '<div class="field-hint" style="margin-top:10px;">The credit note balance can be applied to offset next year\'s benefit charges.</div>'+
+      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Show unutilised amount by employee</summary>'+
+        '<div class="table-wrap" style="margin-top:8px;"><table class="data-table">'+
+        '<thead><tr><th>Employee</th><th>Entitlement</th><th>Approved Claims</th><th>Unutilised</th></tr></thead>'+
+        '<tbody>'+empRows+'</tbody></table></div>'+
+      '</details>'+
+    '</div>';
+  }
+
   function renderAdminReports(){
     var now = new Date();
     var currentYearValue = (STATE.reportYear!=null) ? String(STATE.reportYear) : String(now.getFullYear());
@@ -962,6 +1091,7 @@
     }).join('');
 
     return ''+
+    renderAdminInvoice()+
     '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
       '<div class="report-controls">'+
         '<select data-action="set-report-month" '+(isYtd?'disabled':'')+'>'+REPORT_MONTH_NAMES.map(function(mn,i){ return '<option value="'+i+'" '+(i===currentMonthValue?'selected':'')+'>'+mn+'</option>'; }).join('')+'</select>'+
@@ -1220,6 +1350,103 @@
     }catch(err){
       console.error(err);
       showToast('Could not generate the PDF. Check the console for details.', 'error');
+    }
+  }
+
+  function exportInvoicePDF(){
+    if(typeof window.jspdf==='undefined' || !window.jspdf.jsPDF){ showToast('PDF export library did not load (needs an internet connection).', 'error'); return; }
+    var now = new Date();
+    var year = (STATE.invoiceYear!=null) ? STATE.invoiceYear : (now.getFullYear()-1);
+    var inv = computeAnnualInvoice(year);
+    var invoiceDate = '2 Jan '+(year+1);
+    var adjustmentLabel = inv.adjustmentAmount>=0 ? 'Additional Headcount Charge' : 'Headcount Reduction Credit';
+
+    try{
+      var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+      var pageWidth = doc.internal.pageSize.getWidth();
+      var margin = 15;
+      var brandColor = [19,78,74];
+
+      doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.rect(0, 0, pageWidth, 38, 'F');
+      doc.setTextColor(255,255,255);
+      doc.setFontSize(19);
+      doc.text('Flex Benefits Portal', margin, 18);
+      doc.setFontSize(11);
+      doc.text('Annual Invoice - Headcount Adjustment & Credit Note', margin, 27);
+      doc.setFontSize(9);
+      doc.text('Cresco Insurance Agency Pte Ltd', margin, 34);
+
+      doc.setTextColor(40,40,40);
+      doc.setFontSize(9);
+      doc.text('Invoice Date: '+invoiceDate, margin, 46);
+      doc.text('Period Covered: 1 Jan '+year+' - 31 Dec '+year, margin, 52);
+
+      var cy = 62;
+      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Headcount Adjustment', margin, cy);
+      doc.autoTable({
+        startY: cy+4, margin:{left:margin, right:margin},
+        body: [
+          ['Headcount as at 1 Jan '+year, String(inv.startHeadcount)],
+          ['Headcount as at 31 Dec '+year, String(inv.endHeadcount)],
+          ['Net Change', String(inv.headcountDelta)],
+          ['Adjustment Units (Net Change / 2)', String(inv.adjustmentUnits)],
+          ['Rate per Headcount per Year', fmtMoney(inv.rate)],
+          [adjustmentLabel, fmtMoney(Math.abs(inv.adjustmentAmount))]
+        ],
+        theme:'plain', styles:{fontSize:10, cellPadding:1.5},
+        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
+      });
+      cy = doc.lastAutoTable.finalY + 12;
+
+      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Unutilised Benefit (Credit Note)', margin, cy);
+      doc.autoTable({
+        startY: cy+4, margin:{left:margin, right:margin},
+        body: [
+          ['Total Entitlement Pool for '+year, fmtMoney(inv.totalEntitlementPool)],
+          ['Total Approved Claims for '+year, fmtMoney(inv.totalApprovedForYear)],
+          ['Total Unutilised Amount', fmtMoney(inv.totalUnutilized)]
+        ],
+        theme:'plain', styles:{fontSize:10, cellPadding:1.5},
+        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
+      });
+      cy = doc.lastAutoTable.finalY + 12;
+
+      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Invoice Summary', margin, cy);
+      doc.autoTable({
+        startY: cy+4, margin:{left:margin, right:margin},
+        body: [
+          ['Additional Headcount Charge', fmtMoney(inv.additionalCharge)],
+          ['Less: Credit Note (Unutilised + Headcount Reduction)', '-'+fmtMoney(inv.creditNoteAmount)],
+          [inv.netAmount>=0?'Net Amount Due':'Net Credit Balance', fmtMoney(Math.abs(inv.netAmount))]
+        ],
+        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:10, cellPadding:2},
+        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
+      });
+      cy = doc.lastAutoTable.finalY + 10;
+      doc.setFontSize(8); doc.setTextColor(120,120,120);
+      var noteLines = doc.splitTextToSize('Note: Any credit note balance may be applied to offset the following year\'s flex benefit charges.', pageWidth-margin*2);
+      doc.text(noteLines, margin, cy);
+
+      doc.addPage();
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Unutilised Amount by Employee - '+year, margin, 18);
+      var empRows = inv.unutilizedByEmployee.map(function(e){
+        return [e.name, fmtMoney(e.allocation), fmtMoney(e.approved), fmtMoney(e.unutilized)];
+      });
+      doc.autoTable({
+        startY: 24, margin:{left:margin, right:margin},
+        head:[['Employee','Entitlement (SGD)','Approved Claims (SGD)','Unutilised (SGD)']], body: empRows,
+        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+      });
+
+      doc.save('flex-benefits-invoice-'+year+'.pdf');
+    }catch(err){
+      console.error(err);
+      showToast('Could not generate the invoice PDF. Check the console for details.', 'error');
     }
   }
 
@@ -1625,6 +1852,18 @@
     }).then(function(){ render(); });
   }
 
+  function saveInvoiceRate(){
+    var input = document.getElementById('invoice-rate-input');
+    var val = input ? parseFloat(input.value) : NaN;
+    if(isNaN(val) || val<0){ showToast('Please enter a valid rate.', 'error'); return Promise.resolve(); }
+    STATE.editingInvoiceRate = false;
+    return supabase.from('app_settings').upsert({key:'invoice_rate_per_head', value:String(val)}, {onConflict:'key'}).then(function(res){
+      if(res.error){ showToast('Could not update rate: '+res.error.message, 'error'); return; }
+      showToast('Charge per headcount per year updated.', 'success');
+      return loadAppData();
+    }).then(function(){ render(); });
+  }
+
   function addBenefit(form){
     var cat = form.category.value.trim();
     if(!cat) return Promise.resolve();
@@ -1701,6 +1940,9 @@
       case 'remove-benefit': return removeBenefit(btn.dataset.cat);
       case 'export-report': exportReportExcel(); return Promise.resolve();
       case 'export-report-pdf': exportReportPDF(); return Promise.resolve();
+      case 'edit-invoice-rate': STATE.editingInvoiceRate=true; render(); return Promise.resolve();
+      case 'save-invoice-rate': return saveInvoiceRate();
+      case 'export-invoice-pdf': exportInvoicePDF(); return Promise.resolve();
       case 'filter-history': STATE.historyFilter=btn.dataset.filter; render(); return Promise.resolve();
       case 'filter-staff': STATE.staffRoleFilter=btn.dataset.filter; render(); return Promise.resolve();
       default: return Promise.resolve();
@@ -1744,6 +1986,7 @@
       case 'reject-reason-select': toggleOtherReasonField(target); return Promise.resolve();
       case 'set-report-month': STATE.reportMonth = parseInt(target.value,10); render(); return Promise.resolve();
       case 'set-report-year': STATE.reportYear = (target.value==='ytd') ? 'ytd' : parseInt(target.value,10); render(); return Promise.resolve();
+      case 'set-invoice-year': STATE.invoiceYear = parseInt(target.value,10); render(); return Promise.resolve();
       default: return Promise.resolve();
     }
   }
