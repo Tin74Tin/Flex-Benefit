@@ -54,9 +54,9 @@
 
   /* ---------- Shell / Topbar / Tabs ---------- */
   .shell{max-width:1080px;margin:0 auto;padding:0 20px 60px;}
-  .topbar{display:flex;align-items:center;justify-content:space-between;padding:18px 0 14px;flex-wrap:wrap;gap:10px;}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 0;flex-wrap:wrap;gap:10px;}
   .brand-mini{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;color:var(--primary-dark);}
-  .topbar-logo{width:52px;height:52px;object-fit:contain;flex-shrink:0;}
+  .topbar-logo{height:68px;width:auto;object-fit:contain;flex-shrink:0;}
   .topbar-right{display:flex;align-items:center;gap:12px;}
   .user-chip{font-size:13px;font-weight:600;color:var(--text);}
   .role-tag{font-size:10px;text-transform:uppercase;letter-spacing:.4px;background:var(--primary-light);color:var(--primary-dark);padding:2px 7px;border-radius:20px;margin-left:6px;font-weight:700;}
