@@ -1423,13 +1423,17 @@
 
       doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
       doc.rect(0, 0, pageWidth, 38, 'F');
+      var logoW = 42, logoH = logoW*(90/285);
+      doc.setFillColor(255,255,255);
+      doc.roundedRect(margin-4, 7, logoW+8, logoH+8, 2, 2, 'F');
+      doc.addImage(CRESCO_LOGO_DATA_URI, 'PNG', margin, 11, logoW, logoH);
       doc.setTextColor(255,255,255);
-      doc.setFontSize(19);
-      doc.text('Flex Benefits Portal', margin, 18);
-      doc.setFontSize(11);
-      doc.text('Annual Invoice - Headcount Adjustment & Credit Note', margin, 27);
+      doc.setFontSize(15);
+      doc.text('Annual Invoice', pageWidth-margin, 17, {align:'right'});
+      doc.setFontSize(10);
+      doc.text('Headcount Adjustment & Credit Note', pageWidth-margin, 24, {align:'right'});
       doc.setFontSize(9);
-      doc.text('Cresco Insurance Agency Pte Ltd', margin, 34);
+      doc.text('Flex Benefits Portal by Cresco Insurance Agency Pte Ltd', pageWidth-margin, 32, {align:'right'});
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
