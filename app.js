@@ -310,11 +310,23 @@
     var endStr = year+'-12-31';
     var rate = getInvoiceRate();
 
+    // An employee with no Date of Employment recorded is treated as already
+    // employed (rather than excluded) - missing data shouldn't silently drop
+    // them from headcount or entitlement totals. Only an explicit
+    // Date of Termination excludes them from a given date/period.
+    var employedAt = function(p, dateStr){
+      return p.role==='user' &&
+        (!p.date_of_joining || p.date_of_joining<=dateStr) &&
+        (!p.date_of_termination || p.date_of_termination>=dateStr);
+    };
+    var employedDuringRange = function(p, rangeStartStr, rangeEndStr){
+      return p.role==='user' &&
+        (!p.date_of_joining || p.date_of_joining<=rangeEndStr) &&
+        (!p.date_of_termination || p.date_of_termination>=rangeStartStr);
+    };
+
     var headcountAt = function(dateStr){
-      return STATE.profiles.filter(function(p){
-        return p.role==='user' && p.date_of_joining && p.date_of_joining<=dateStr &&
-          (!p.date_of_termination || p.date_of_termination>=dateStr);
-      }).length;
+      return STATE.profiles.filter(function(p){ return employedAt(p, dateStr); }).length;
     };
     var startHeadcount = headcountAt(startStr);
     var endHeadcount = headcountAt(endStr);
@@ -324,10 +336,7 @@
     var additionalCharge = Math.max(adjustmentAmount, 0);
     var headcountCredit = Math.max(-adjustmentAmount, 0);
 
-    var employeesInYear = STATE.profiles.filter(function(p){
-      return p.role==='user' && p.date_of_joining && p.date_of_joining<=endStr &&
-        (!p.date_of_termination || p.date_of_termination>=startStr);
-    });
+    var employeesInYear = STATE.profiles.filter(function(p){ return employedDuringRange(p, startStr, endStr); });
     var totalEntitlementPool=0, totalApprovedForYear=0;
     var unutilizedByEmployee = employeesInYear.map(function(p){
       var approved = STATE.claims.filter(function(c){
