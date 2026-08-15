@@ -353,6 +353,10 @@
 
     var creditNoteAmount = totalUnutilized + headcountCredit;
     var netAmount = additionalCharge - creditNoteAmount;
+    // Invoice Payable Amount: what the company is actually billed for the
+    // upcoming year's benefit funding, net of the headcount adjustment and
+    // any credit note carried in from this year.
+    var invoicePayableAmount = totalEntitlementPool + adjustmentAmount - creditNoteAmount;
 
     // Supporting lists so the headcount adjustment can be audited: who counted
     // as headcount at the start of the year, and who joined or was terminated
@@ -379,7 +383,7 @@
       additionalCharge:additionalCharge, headcountCredit:headcountCredit,
       totalEntitlementPool:totalEntitlementPool, totalApprovedForYear:totalApprovedForYear,
       totalUnutilized:totalUnutilized, unutilizedByEmployee:unutilizedByEmployee,
-      creditNoteAmount:creditNoteAmount, netAmount:netAmount,
+      creditNoteAmount:creditNoteAmount, netAmount:netAmount, invoicePayableAmount:invoicePayableAmount,
       startHeadcountList:startHeadcountList, membershipChanges:membershipChanges
     };
   }
@@ -1040,7 +1044,8 @@
         '<div class="card stat"><div class="stat-label">Headcount Adjustment</div><div class="stat-value">'+fmtMoney(inv.adjustmentAmount)+'</div></div>'+
         '<div class="card stat"><div class="stat-label">Unutilised Benefit</div><div class="stat-value">'+fmtMoney(inv.totalUnutilized)+'</div></div>'+
         '<div class="card stat"><div class="stat-label">Total Credit Note</div><div class="stat-value">'+fmtMoney(inv.creditNoteAmount)+'</div></div>'+
-        '<div class="card stat highlight"><div class="stat-label">'+(inv.netAmount>=0?'Net Amount Due':'Net Credit Balance')+'</div><div class="stat-value">'+fmtMoney(Math.abs(inv.netAmount))+'</div></div>'+
+        '<div class="card stat"><div class="stat-label">'+(inv.netAmount>=0?'Net Amount Due':'Net Credit Balance')+'</div><div class="stat-value">'+fmtMoney(Math.abs(inv.netAmount))+'</div></div>'+
+        '<div class="card stat highlight"><div class="stat-label">Invoice Payable Amount</div><div class="stat-value">'+fmtMoney(inv.invoicePayableAmount)+'</div></div>'+
       '</div>'+
     '</div>'+
     '<div class="card">'+
@@ -1470,7 +1475,8 @@
         body: [
           ['Additional Headcount Charge', fmtMoney(inv.additionalCharge)],
           ['Less: Credit Note (Unutilised + Headcount Reduction)', '-'+fmtMoney(inv.creditNoteAmount)],
-          [inv.netAmount>=0?'Net Amount Due':'Net Credit Balance', fmtMoney(Math.abs(inv.netAmount))]
+          [inv.netAmount>=0?'Net Amount Due':'Net Credit Balance', fmtMoney(Math.abs(inv.netAmount))],
+          ['Invoice Payable Amount', fmtMoney(inv.invoicePayableAmount)]
         ],
         theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:10, cellPadding:2},
         columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
