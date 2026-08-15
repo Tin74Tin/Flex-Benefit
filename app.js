@@ -52,6 +52,7 @@
     reportMonth: null, reportYear: null,
     invoiceYear: null,
     editingInvoiceRate: false,
+    editingBranding: false,
     appSettings: {},
     _realtimeSubscribed: false
   };
@@ -1090,8 +1091,29 @@
       return '<tr><td>'+escapeHtml(r.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td class="tiny">'+r.reasonBreakdown+'</td></tr>';
     }).join('');
 
+    var brandName = getCompanyName();
+    var brandColorHex = (STATE.appSettings && STATE.appSettings.company_brand_color) || '#134E4A';
+    var brandLogoUrl = (STATE.appSettings && STATE.appSettings.company_logo_url) || '';
+    var brandingCell = STATE.editingBranding
+      ? '<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">'+
+          '<label class="tiny">Company name<br/><input type="text" id="branding-name-input" style="width:220px" value="'+escapeHtml(brandName)+'"/></label>'+
+          '<label class="tiny">Logo URL<br/><input type="text" id="branding-logo-input" style="width:280px" placeholder="https://..." value="'+escapeHtml(brandLogoUrl)+'"/></label>'+
+          '<label class="tiny">Brand colour<br/><input type="color" id="branding-color-input" style="width:50px; height:32px; vertical-align:middle;" value="'+brandColorHex+'"/></label>'+
+          '<button class="btn btn-sm btn-primary" data-action="save-branding" style="align-self:flex-end;">Save</button>'+
+        '</div>'
+      : '<div class="field-hint">'+
+          'Company Name: <strong>'+escapeHtml(brandName)+'</strong> &nbsp;|&nbsp; '+
+          'Brand Colour: <span style="display:inline-block; width:14px; height:14px; background:'+brandColorHex+'; border:1px solid #ccc; vertical-align:middle; border-radius:3px;"></span> '+brandColorHex+' &nbsp;|&nbsp; '+
+          'Logo: '+(brandLogoUrl?'Set':'Not set')+
+          ' <button class="link-btn" data-action="edit-branding">Edit</button>'+
+        '</div>';
+
     return ''+
     renderAdminInvoice()+
+    '<div class="card"><div class="card-title">Report Branding</div>'+
+      '<div class="field-hint" style="margin-bottom:10px;">Used on the cover page of the HR report and invoice PDFs \u2014 shows this company\'s name, logo, and colour instead of the default.</div>'+
+      brandingCell+
+    '</div>'+
     '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
       '<div class="report-controls">'+
         '<select data-action="set-report-month" '+(isYtd?'disabled':'')+'>'+REPORT_MONTH_NAMES.map(function(mn,i){ return '<option value="'+i+'" '+(i===currentMonthValue?'selected':'')+'>'+mn+'</option>'; }).join('')+'</select>'+
@@ -1194,6 +1216,67 @@
     }
   }
 
+  function hexToRgbArray(hex){
+    hex = String(hex||'').trim().replace('#','');
+    if(hex.length===3){ hex = hex.split('').map(function(c){ return c+c; }).join(''); }
+    if(!/^[0-9a-fA-F]{6}$/.test(hex)) return [19,78,74];
+    var num = parseInt(hex,16);
+    return [(num>>16)&255, (num>>8)&255, num&255];
+  }
+
+  function getBrandColor(){
+    var hex = STATE.appSettings && STATE.appSettings.company_brand_color;
+    return hex ? hexToRgbArray(hex) : [19,78,74];
+  }
+
+  function getCompanyName(){
+    var name = STATE.appSettings && STATE.appSettings.company_name;
+    return (name && name.trim()) ? name.trim() : 'Cresco Insurance Agency Pte Ltd';
+  }
+
+  function loadCompanyLogo(){
+    var url = STATE.appSettings && STATE.appSettings.company_logo_url;
+    if(!url) return Promise.resolve(null);
+    return new Promise(function(resolve){
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function(){
+        try{
+          var canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+          canvas.getContext('2d').drawImage(img,0,0);
+          resolve({dataUrl:canvas.toDataURL('image/png'), width:img.naturalWidth, height:img.naturalHeight});
+        }catch(e){ resolve(null); } /* CORS-tainted canvas or similar - fall back to no logo */
+      };
+      img.onerror = function(){ resolve(null); };
+      img.src = url;
+    });
+  }
+
+  function drawPdfCoverBand(doc, pageWidth, opts){
+    var brandColor = opts.brandColor;
+    doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
+    doc.rect(0, 0, pageWidth, 38, 'F');
+    var textX = 15;
+    if(opts.logo){
+      var maxH=20, maxW=42;
+      var ratio = opts.logo.width/opts.logo.height;
+      var logoH = maxH, logoW = logoH*ratio;
+      if(logoW>maxW){ logoW=maxW; logoH=logoW/ratio; }
+      try{
+        doc.addImage(opts.logo.dataUrl, 'PNG', 15, (38-logoH)/2, logoW, logoH);
+        textX = 15 + logoW + 6;
+      }catch(e){ /* skip logo, keep text-only header */ }
+    }
+    doc.setTextColor(255,255,255);
+    doc.setFontSize(19);
+    doc.text(opts.title, textX, 18);
+    doc.setFontSize(11);
+    doc.text(opts.subtitle, textX, 27);
+    doc.setFontSize(9);
+    doc.text(opts.tagline, textX, 34);
+  }
+
   function exportReportPDF(){
     if(typeof window.jspdf==='undefined' || !window.jspdf.jsPDF){ showToast('PDF export library did not load (needs an internet connection).', 'error'); return; }
     var now = new Date();
@@ -1221,23 +1304,22 @@
     var totalSubmissions = report.totalCount + report.totalRejectedCount;
     var rejectionRate = totalSubmissions>0 ? (report.totalRejectedCount/totalSubmissions*100) : 0;
 
+    loadCompanyLogo().then(function(logo){
     try{
       var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
       var pageWidth = doc.internal.pageSize.getWidth();
       var pageHeight = doc.internal.pageSize.getHeight();
       var margin = 15;
-      var brandColor = [19,78,74];
+      var brandColor = getBrandColor();
+      var companyName = getCompanyName();
 
       /* ---- Page 1: Cover, Key Metrics, Key Insights ---- */
-      doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.rect(0, 0, pageWidth, 38, 'F');
-      doc.setTextColor(255,255,255);
-      doc.setFontSize(19);
-      doc.text('Flex Benefits Portal', margin, 18);
-      doc.setFontSize(11);
-      doc.text('Monthly Utilisation Report - '+periodLabel, margin, 27);
-      doc.setFontSize(9);
-      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for HR', margin, 34);
+      drawPdfCoverBand(doc, pageWidth, {
+        brandColor: brandColor, logo: logo,
+        title: companyName,
+        subtitle: 'Monthly Utilisation Report - '+periodLabel,
+        tagline: 'Flex Benefits Portal  |  Prepared for HR'
+      });
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
@@ -1346,11 +1428,15 @@
         doc.text('No rejected claims this period.', margin, 30);
       }
 
+      if(STATE.appSettings && STATE.appSettings.company_logo_url && !logo){
+        showToast('Company logo could not be loaded for the PDF (check the image URL is publicly accessible). Report generated without it.', 'error');
+      }
       doc.save('flex-benefits-hr-report-'+period.fileSuffix+'.pdf');
     }catch(err){
       console.error(err);
       showToast('Could not generate the PDF. Check the console for details.', 'error');
     }
+    });
   }
 
   function exportInvoicePDF(){
@@ -1361,21 +1447,20 @@
     var invoiceDate = '2 Jan '+(year+1);
     var adjustmentLabel = inv.adjustmentAmount>=0 ? 'Additional Headcount Charge' : 'Headcount Reduction Credit';
 
+    loadCompanyLogo().then(function(logo){
     try{
       var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
       var pageWidth = doc.internal.pageSize.getWidth();
       var margin = 15;
-      var brandColor = [19,78,74];
+      var brandColor = getBrandColor();
+      var companyName = getCompanyName();
 
-      doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.rect(0, 0, pageWidth, 38, 'F');
-      doc.setTextColor(255,255,255);
-      doc.setFontSize(19);
-      doc.text('Flex Benefits Portal', margin, 18);
-      doc.setFontSize(11);
-      doc.text('Annual Invoice - Headcount Adjustment & Credit Note', margin, 27);
-      doc.setFontSize(9);
-      doc.text('Cresco Insurance Agency Pte Ltd', margin, 34);
+      drawPdfCoverBand(doc, pageWidth, {
+        brandColor: brandColor, logo: logo,
+        title: companyName,
+        subtitle: 'Annual Invoice - Headcount Adjustment & Credit Note',
+        tagline: 'Flex Benefits Portal'
+      });
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
@@ -1443,11 +1528,15 @@
         theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
       });
 
+      if(STATE.appSettings && STATE.appSettings.company_logo_url && !logo){
+        showToast('Company logo could not be loaded for the invoice PDF (check the image URL is publicly accessible). Invoice generated without it.', 'error');
+      }
       doc.save('flex-benefits-invoice-'+year+'.pdf');
     }catch(err){
       console.error(err);
       showToast('Could not generate the invoice PDF. Check the console for details.', 'error');
     }
+    });
   }
 
   /* =========================================================
@@ -1864,6 +1953,26 @@
     }).then(function(){ render(); });
   }
 
+  function saveBranding(){
+    var nameInput = document.getElementById('branding-name-input');
+    var logoInput = document.getElementById('branding-logo-input');
+    var colorInput = document.getElementById('branding-color-input');
+    var name = nameInput ? nameInput.value.trim() : '';
+    var logoUrl = logoInput ? logoInput.value.trim() : '';
+    var color = colorInput ? colorInput.value : '#134E4A';
+    STATE.editingBranding = false;
+    var rows = [
+      {key:'company_name', value:name},
+      {key:'company_logo_url', value:logoUrl},
+      {key:'company_brand_color', value:color}
+    ];
+    return supabase.from('app_settings').upsert(rows, {onConflict:'key'}).then(function(res){
+      if(res.error){ showToast('Could not update branding: '+res.error.message, 'error'); return; }
+      showToast('Report branding updated.', 'success');
+      return loadAppData();
+    }).then(function(){ render(); });
+  }
+
   function addBenefit(form){
     var cat = form.category.value.trim();
     if(!cat) return Promise.resolve();
@@ -1942,6 +2051,8 @@
       case 'export-report-pdf': exportReportPDF(); return Promise.resolve();
       case 'edit-invoice-rate': STATE.editingInvoiceRate=true; render(); return Promise.resolve();
       case 'save-invoice-rate': return saveInvoiceRate();
+      case 'edit-branding': STATE.editingBranding=true; render(); return Promise.resolve();
+      case 'save-branding': return saveBranding();
       case 'export-invoice-pdf': exportInvoicePDF(); return Promise.resolve();
       case 'filter-history': STATE.historyFilter=btn.dataset.filter; render(); return Promise.resolve();
       case 'filter-staff': STATE.staffRoleFilter=btn.dataset.filter; render(); return Promise.resolve();
