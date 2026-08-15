@@ -354,13 +354,33 @@
     var creditNoteAmount = totalUnutilized + headcountCredit;
     var netAmount = additionalCharge - creditNoteAmount;
 
+    // Supporting lists so the headcount adjustment can be audited: who counted
+    // as headcount at the start of the year, and who joined or was terminated
+    // during the year (the movements that produced the net change).
+    var startHeadcountList = STATE.profiles.filter(function(p){ return employedAt(p, startStr); })
+      .map(function(p){ return {name:p.name, allocation:Number(p.annual_allocation)||0}; })
+      .sort(function(a,b){ return a.name.localeCompare(b.name); });
+
+    var joinedDuringYear = STATE.profiles.filter(function(p){
+      return p.role==='user' && p.date_of_joining && p.date_of_joining>startStr && p.date_of_joining<=endStr;
+    });
+    var terminatedDuringYear = STATE.profiles.filter(function(p){
+      return p.role==='user' && p.date_of_termination && p.date_of_termination>=startStr && p.date_of_termination<=endStr;
+    });
+    var membershipChanges = joinedDuringYear.map(function(p){
+      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Joined', date:p.date_of_joining};
+    }).concat(terminatedDuringYear.map(function(p){
+      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Terminated', date:p.date_of_termination};
+    })).sort(function(a,b){ return a.name.localeCompare(b.name); });
+
     return {
       year:year, rate:rate, startHeadcount:startHeadcount, endHeadcount:endHeadcount,
       headcountDelta:headcountDelta, adjustmentUnits:adjustmentUnits, adjustmentAmount:adjustmentAmount,
       additionalCharge:additionalCharge, headcountCredit:headcountCredit,
       totalEntitlementPool:totalEntitlementPool, totalApprovedForYear:totalApprovedForYear,
       totalUnutilized:totalUnutilized, unutilizedByEmployee:unutilizedByEmployee,
-      creditNoteAmount:creditNoteAmount, netAmount:netAmount
+      creditNoteAmount:creditNoteAmount, netAmount:netAmount,
+      startHeadcountList:startHeadcountList, membershipChanges:membershipChanges
     };
   }
 
@@ -1034,6 +1054,16 @@
           '<tr><td>Rate per Headcount</td><td>'+fmtMoney(inv.rate)+'</td></tr>'+
         '</tbody></table></div>'+
       '</details>'+
+      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Headcount as at 1 Jan '+year+' ('+inv.startHeadcountList.length+' employees)</summary>'+
+        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
+        '<thead><tr><th>Employee</th><th>Annual Allocation</th></tr></thead>'+
+        '<tbody>'+(inv.startHeadcountList.length ? inv.startHeadcountList.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="2" class="muted">No employees on record as at 1 Jan '+year+'.</td></tr>')+'</tbody></table></div>'+
+      '</details>'+
+      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Membership Changes in '+year+' ('+inv.membershipChanges.length+' employees)</summary>'+
+        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
+        '<thead><tr><th>Employee</th><th>Change</th><th>Date</th><th>Annual Allocation</th></tr></thead>'+
+        '<tbody>'+(inv.membershipChanges.length ? inv.membershipChanges.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+e.change+'</td><td>'+fmtDate(e.date)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="4" class="muted">No joiners or terminations recorded in '+year+'.</td></tr>')+'</tbody></table></div>'+
+      '</details>'+
       '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Unutilised Benefit</summary>'+
         '<div class="table-wrap" style="margin-top:10px;"><table class="data-table"><tbody>'+
           '<tr><td>Total Entitlement Pool for '+year+'</td><td>'+fmtMoney(inv.totalEntitlementPool)+'</td></tr>'+
@@ -1449,6 +1479,40 @@
       doc.setFontSize(8); doc.setTextColor(120,120,120);
       var noteLines = doc.splitTextToSize('Note: Any credit note balance may be applied to offset the following year\'s flex benefit charges.', pageWidth-margin*2);
       doc.text(noteLines, margin, cy);
+
+      doc.addPage();
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Headcount as at 1 Jan '+year+' - by Employee', margin, 18);
+      doc.setFontSize(9); doc.setTextColor(100,100,100);
+      doc.text('Supporting detail for the headcount adjustment above. '+inv.startHeadcountList.length+' employee(s) counted.', margin, 24);
+      if(inv.startHeadcountList.length){
+        var startHcRows = inv.startHeadcountList.map(function(e){ return [e.name, fmtMoney(e.allocation)]; });
+        doc.autoTable({
+          startY: 30, margin:{left:margin, right:margin},
+          head:[['Employee','Annual Allocation (SGD)']], body: startHcRows,
+          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+        });
+      } else {
+        doc.setFontSize(10); doc.setTextColor(120,120,120);
+        doc.text('No employees on record as at 1 Jan '+year+'.', margin, 34);
+      }
+
+      doc.addPage();
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Membership Changes in '+year, margin, 18);
+      doc.setFontSize(9); doc.setTextColor(100,100,100);
+      doc.text('Employees who joined or were terminated during the year - the movements behind the net change above.', margin, 24);
+      if(inv.membershipChanges.length){
+        var changeRows = inv.membershipChanges.map(function(e){ return [e.name, e.change, fmtDate(e.date), fmtMoney(e.allocation)]; });
+        doc.autoTable({
+          startY: 30, margin:{left:margin, right:margin},
+          head:[['Employee','Change','Date','Annual Allocation (SGD)']], body: changeRows,
+          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+        });
+      } else {
+        doc.setFontSize(10); doc.setTextColor(120,120,120);
+        doc.text('No joiners or terminations recorded in '+year+'.', margin, 34);
+      }
 
       doc.addPage();
       doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
