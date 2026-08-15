@@ -24,9 +24,8 @@
     loading: true,
     authView: 'login',
     authError: '',
-    authInfo: '',
-    forgotSent: false,
-    session: null,
+    authInfo: '',
+    session: null,
     profile: null,
     activeTab: null,
     profiles: [], benefits: [], rejectReasons: [], claims: [], notifications: [], invites: [],
@@ -390,34 +389,9 @@
     }, 400);
   }
 
-  function isRecoveryLink(){
-    var hash = window.location.hash || '';
-    var search = window.location.search || '';
-    return hash.indexOf('type=recovery') !== -1 || search.indexOf('type=recovery') !== -1;
-  }
-
   function init(){
     if(!supabase){ STATE.loading = false; render(); return; }
     STATE.loading = true; render();
-
-    supabase.auth.onAuthStateChange(function(event, session){
-      if(event === 'PASSWORD_RECOVERY'){
-        STATE.session = session;
-        STATE.profile = null;
-        STATE.authView = 'reset-password';
-        STATE.authError = '';
-        STATE.loading = false;
-        render();
-        return;
-      }
-      if(event === 'SIGNED_OUT'){
-        STATE.session = null; STATE.profile = null; STATE.activeTab = null; STATE.authView = 'login';
-        render();
-      }
-    });
-
-    if(isRecoveryLink()){ return; }
-
     supabase.auth.getSession().then(function(res){
       STATE.session = res.data.session;
       return STATE.session ? loadProfileAndData() : null;
@@ -430,6 +404,13 @@
       console.error(err);
       STATE.session = null; STATE.profile = null; STATE.loading = false;
       render();
+    });
+
+    supabase.auth.onAuthStateChange(function(event, session){
+      if(event === 'SIGNED_OUT'){
+        STATE.session = null; STATE.profile = null; STATE.activeTab = null;
+        render();
+      }
     });
   }
 
@@ -499,10 +480,7 @@
      AUTH VIEWS
   ========================================================== */
   function renderAuthScreen(){
-    if(STATE.authView === 'signup') return renderSignup();
-    if(STATE.authView === 'forgot') return renderForgotPassword();
-    if(STATE.authView === 'reset-password') return renderResetPassword();
-    return renderLogin();
+    return STATE.authView === 'signup' ? renderSignup() : renderLogin();
   }
 
   function renderLogin(){
@@ -517,7 +495,7 @@
       '</form>'+
       '<div class="auth-toggle">'+
         '<button data-action="show-signup">New User Login</button>'+
-       '<button data-action="show-forgot">Forgot password?</button>'+
+        '<button data-action="forgot-password">Forgot password?</button>'+
       '</div>'+
     '</div></div>';
   }
@@ -537,46 +515,12 @@
     '</div></div>';
   }
 
-  function renderForgotPassword(){
-    if(STATE.forgotSent){
-      return '<div class="login-wrap"><div class="login-card">'+
-        '<div class="login-brand"><img src="'+CRESCO_LOGO_DATA_URI+'" class="login-logo-img" alt="Cresco Insurance Agency Pte Ltd"/>'+
-        '<h1>Forgot password</h1><p class="muted">Please enter your registered email address</p></div>'+
-        '<div class="info-banner banner-success">&#10003; We have sent you an email with instructions on how to reset your password.</div>'+
-        '<div class="auth-toggle"><button data-action="show-login">Back to Login</button></div>'+
-      '</div></div>';
-    }
-    return '<div class="login-wrap"><div class="login-card">'+
-      '<div class="login-brand"><img src="'+CRESCO_LOGO_DATA_URI+'" class="login-logo-img" alt="Cresco Insurance Agency Pte Ltd"/>'+
-      '<h1>Forgot password</h1><p class="muted">Please enter your registered email address</p></div>'+
-      '<form data-form="forgot-password" class="login-form">'+
-        '<label>Email<input type="email" name="email" autocomplete="username" required placeholder="you@company.com" /></label>'+
-        (STATE.authError ? '<div class="field-error">'+escapeHtml(STATE.authError)+'</div>' : '')+
-        '<button type="submit" class="btn btn-primary btn-block">Send Reset Link</button>'+
-      '</form>'+
-      '<div class="auth-toggle"><button data-action="show-login">Back to Login</button></div>'+
-    '</div></div>';
-  }
-
-  function renderResetPassword(){
-    return '<div class="login-wrap"><div class="login-card">'+
-      '<div class="login-brand"><img src="'+CRESCO_LOGO_DATA_URI+'" class="login-logo-img" alt="Cresco Insurance Agency Pte Ltd"/>'+
-      '<h1>Reset password</h1><p class="muted">Please enter your new password.</p></div>'+
-      '<form data-form="reset-password" class="login-form">'+
-        '<label>New Password<input type="password" name="newPassword" autocomplete="new-password" required minlength="6" placeholder="At least 6 characters" /></label>'+
-        '<label>Confirm Password<input type="password" name="confirmPassword" autocomplete="new-password" required placeholder="Repeat your password" /></label>'+
-        (STATE.authError ? '<div class="field-error">'+escapeHtml(STATE.authError)+'</div>' : '')+
-        '<button type="submit" class="btn btn-primary btn-block">Reset Password</button>'+
-      '</form>'+
-    '</div></div>';
-  }
-
   /* =========================================================
      SHARED: TOPBAR / NAV TAB
   ========================================================== */
   function renderTopbar(){
     return '<div class="topbar">'+
-      '<div class="brand-mini"><span class="login-logo small">FB</span> Flex Benefits Portal</div>'+
+      '<div class="brand-mini"><img src="'+CRESCO_LOGO_DATA_URI+'" class="topbar-logo" alt="Cresco" /> Cresco Insurance Agency Flex Benefits Portal</div>'+
       '<div class="topbar-right"><span class="user-chip">'+escapeHtml(STATE.profile.name)+' <span class="role-tag">'+STATE.profile.role+'</span></span>'+
       '<button class="btn btn-ghost btn-sm" data-action="logout">Log out</button></div>'+
     '</div>';
@@ -1347,52 +1291,22 @@
     });
   }
 
-  function doForgotPasswordSubmit(form){
-    var email = form.email.value.trim();
-    if(!email){ STATE.authError = 'Please enter your email.'; render(); return Promise.resolve(); }
-    STATE.authError = '';
-    var btn = form.querySelector('button[type=submit]');
-    btn.disabled = true; btn.textContent = 'Sending...';
+  function handleForgotPassword(){
+    var emailInput = document.querySelector('form[data-form="login"] input[name="email"]');
+    var email = emailInput ? emailInput.value.trim() : '';
+    if(!email){ showToast('Enter your email above first, then click "Forgot password?".', 'error'); return Promise.resolve(); }
+    STATE.authError = ''; render();
+    var btn = document.querySelector('[data-action="forgot-password"]');
+    var originalLabel = btn ? btn.textContent : '';
+    if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
     var redirectTo = window.location.origin + window.location.pathname;
     return withTimeout(supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}), 8000, 'Password reset request').then(function(res){
-      if(res.error){ STATE.authError = res.error.message; render(); return; }
-      STATE.forgotSent = true;
-      STATE.authError = '';
-      render();
+      if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
+      showToast('Password reset email sent - check your inbox.', 'success');
     }).catch(function(err){
-      STATE.authError = (err && err.message) || String(err);
-      render();
+      showToast('Could not send reset email: '+((err && err.message) || err), 'error');
     }).then(function(){
-      if(btn){ btn.disabled = false; btn.textContent = 'Send Reset Link'; }
-    });
-  }
-
-  function doResetPassword(form){
-    var pw = form.newPassword.value;
-    var confirmPw = form.confirmPassword.value;
-    if(pw.length < 6){ STATE.authError = 'Password must be at least 6 characters.'; render(); return Promise.resolve(); }
-    if(pw !== confirmPw){ STATE.authError = 'Passwords do not match.'; render(); return Promise.resolve(); }
-    var btn = form.querySelector('button[type=submit]');
-    btn.disabled = true; btn.textContent = 'Saving...';
-    return supabase.auth.updateUser({password:pw}).then(function(res){
-      if(res.error){ STATE.authError = res.error.message; render(); return; }
-      STATE.authError = '';
-      history.replaceState(null, '', window.location.pathname);
-      STATE.loading = true; render();
-      return loadProfileAndData().then(function(){
-        STATE.loading = false;
-        STATE.authView = 'login';
-        STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard';
-        render();
-        subscribeRealtime();
-        showToast('Password updated successfully.', 'success');
-      });
-    }).catch(function(err){
-      STATE.loading = false;
-      STATE.authError = (err && err.message) || String(err);
-      render();
-    }).then(function(){
-      if(btn){ btn.disabled = false; btn.textContent = 'Reset Password'; }
+      if(btn){ btn.disabled = false; btn.textContent = originalLabel || 'Forgot password?'; }
     });
   }
 
@@ -1739,9 +1653,9 @@
     var action = btn.dataset.action;
     var id = btn.dataset.id;
     switch(action){
-      case 'show-signup': STATE.authView='signup'; STATE.authError=''; STATE.authInfo=''; STATE.forgotSent=false; render(); return Promise.resolve();
-      case 'show-login': STATE.authView='login'; STATE.authError=''; STATE.authInfo=''; STATE.forgotSent=false; render(); return Promise.resolve();
-      case 'show-forgot': STATE.authView='forgot'; STATE.authError=''; STATE.forgotSent=false; render(); return Promise.resolve();
+      case 'show-signup': STATE.authView='signup'; STATE.authError=''; STATE.authInfo=''; render(); return Promise.resolve();
+      case 'show-login': STATE.authView='login'; STATE.authError=''; STATE.authInfo=''; render(); return Promise.resolve();
+      case 'forgot-password': return handleForgotPassword();
       case 'nav': STATE.activeTab = btn.dataset.tab; STATE.claimFormError=null; render(); return Promise.resolve();
       case 'logout': return supabase.auth.signOut();
       case 'buy-pa': window.open('https://insure.aia.com.sg/aianow3/solitaire?f=43519&i=agy', '_blank', 'noopener,noreferrer'); return Promise.resolve();
@@ -1800,7 +1714,6 @@
     var type = form.dataset.form;
     if(type==='login') return doLogin(form);
     if(type==='signup') return doSignup(form);
-  
     if(type==='submit-claim') return submitClaim(form);
     if(type==='invite-staff') return inviteStaff(form);
     if(type==='add-benefit') return addBenefit(form);
