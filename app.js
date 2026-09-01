@@ -537,9 +537,13 @@
     var app = document.getElementById('app');
     if(!supabase){ app.innerHTML = renderSetupNeeded(); return; }
     if(STATE.loading){ app.innerHTML = renderLoading() + renderBrandFooter(); return; }
-    if(STATE.authView === 'reset-password'){ app.innerHTML = renderResetPassword() + renderBrandFooter(); return; }
-    if(!STATE.session || !STATE.profile){ app.innerHTML = renderAuthScreen() + renderBrandFooter(); return; }
-    app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
+    if(STATE.authView === 'reset-password'){
+      app.innerHTML = renderResetPassword() + renderBrandFooter();
+    } else if(!STATE.session || !STATE.profile){
+      app.innerHTML = renderAuthScreen() + renderBrandFooter();
+    } else {
+      app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
+    }
     if(STATE.modal){
       var host = document.createElement('div');
       host.innerHTML = renderModal();
