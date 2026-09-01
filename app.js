@@ -44,15 +44,13 @@
     historySearchQuery: '',
     allSubmissionsSearchQuery: '',
     reportSearchQuery: '',
+    familyMembers: [],
     reportSortColumn: null,
     reportSortDirection: 'desc',
     rejectedSearchQuery: '',
     rejectedSortColumn: null,
     rejectedSortDirection: 'desc',
     reportMonth: null, reportYear: null,
-    invoiceYear: null,
-    editingInvoiceRate: false,
-    appSettings: {},
     _realtimeSubscribed: false
   };
 
@@ -161,6 +159,17 @@
 
   function profileById(id){ return STATE.profiles.filter(function(p){ return p.id===id; })[0]; }
   function employeeName(id){ var p = profileById(id); return p ? p.name : 'Unknown'; }
+  function familyMemberById(id){ return STATE.familyMembers.filter(function(f){ return f.id===id; })[0] || null; }
+  function familyMembersForEmail(email){ return STATE.familyMembers.filter(function(f){ return f.employee_email===email; }); }
+  function ageAtDate(dob, atDateStr){
+    if(!dob) return null;
+    var birth = new Date(dob+'T00:00:00');
+    var at = new Date(atDateStr+'T00:00:00');
+    var age = at.getFullYear() - birth.getFullYear();
+    var hadBirthdayYet = (at.getMonth() > birth.getMonth()) || (at.getMonth()===birth.getMonth() && at.getDate() >= birth.getDate());
+    if(!hadBirthdayYet) age--;
+    return age;
+  }
 
   function vendorSuggestions(){
     var seen = {}; var list = [];
@@ -282,112 +291,6 @@
       rejectedClaims:rejectedClaims, byEmployeeRejected:byEmployeeRejected, totalRejectedCount:rejected.length, totalRejectedAmount:totalRejected};
   }
 
-  /* =========================================================
-     ANNUAL INVOICE (Headcount Adjustment + Unutilised Credit Note)
-     Principle: adjustment = (headcount at 31 Dec - headcount at 1 Jan) / 2,
-     charged (or credited if negative) at the configured rate per head per year.
-     Any amount not utilised by employees for the year is credited back via
-     credit note, as is any negative headcount adjustment. Net amount =
-     additional headcount charge minus total credit note.
-  ========================================================== */
-  function getInvoiceRate(){
-    var n = parseFloat(STATE.appSettings && STATE.appSettings.invoice_rate_per_head);
-    return isNaN(n) ? 88 : n;
-  }
-
-  function buildInvoiceYearOptions(){
-    var now = new Date();
-    var years = {};
-    years[now.getFullYear()] = true;
-    years[now.getFullYear()-1] = true;
-    STATE.profiles.forEach(function(p){ if(p.date_of_joining){ years[parseInt(p.date_of_joining.slice(0,4),10)]=true; } });
-    STATE.claims.forEach(function(c){ if(c.receipt_date){ years[parseInt(c.receipt_date.slice(0,4),10)]=true; } });
-    return Object.keys(years).map(Number).sort(function(a,b){ return b-a; });
-  }
-
-  function computeAnnualInvoice(year){
-    var startStr = year+'-01-01';
-    var endStr = year+'-12-31';
-    var rate = getInvoiceRate();
-
-    // An employee with no Date of Employment recorded is treated as already
-    // employed (rather than excluded) - missing data shouldn't silently drop
-    // them from headcount or entitlement totals. Only an explicit
-    // Date of Termination excludes them from a given date/period.
-    var employedAt = function(p, dateStr){
-      return p.role==='user' &&
-        (!p.date_of_joining || p.date_of_joining<=dateStr) &&
-        (!p.date_of_termination || p.date_of_termination>=dateStr);
-    };
-    var employedDuringRange = function(p, rangeStartStr, rangeEndStr){
-      return p.role==='user' &&
-        (!p.date_of_joining || p.date_of_joining<=rangeEndStr) &&
-        (!p.date_of_termination || p.date_of_termination>=rangeStartStr);
-    };
-
-    var headcountAt = function(dateStr){
-      return STATE.profiles.filter(function(p){ return employedAt(p, dateStr); }).length;
-    };
-    var startHeadcount = headcountAt(startStr);
-    var endHeadcount = headcountAt(endStr);
-    var headcountDelta = endHeadcount - startHeadcount;
-    var adjustmentUnits = headcountDelta/2;
-    var adjustmentAmount = adjustmentUnits * rate;
-    var additionalCharge = Math.max(adjustmentAmount, 0);
-    var headcountCredit = Math.max(-adjustmentAmount, 0);
-
-    var employeesInYear = STATE.profiles.filter(function(p){ return employedDuringRange(p, startStr, endStr); });
-    var totalEntitlementPool=0, totalApprovedForYear=0;
-    var unutilizedByEmployee = employeesInYear.map(function(p){
-      var approved = STATE.claims.filter(function(c){
-        return c.employee_id===p.id && c.status==='approved' &&
-          c.receipt_date && c.receipt_date>=startStr && c.receipt_date<=endStr;
-      }).reduce(function(s,c){ return s+sgdAmountOf(c); }, 0);
-      var allocation = Number(p.annual_allocation)||0;
-      var unutilized = Math.max(0, allocation-approved);
-      totalEntitlementPool += allocation;
-      totalApprovedForYear += approved;
-      return {name:p.name, allocation:allocation, approved:approved, unutilized:unutilized};
-    }).sort(function(a,b){ return b.unutilized-a.unutilized; });
-    var totalUnutilized = unutilizedByEmployee.reduce(function(s,e){ return s+e.unutilized; }, 0);
-
-    var creditNoteAmount = totalUnutilized + headcountCredit;
-    var netAmount = additionalCharge - creditNoteAmount;
-    // Invoice Payable Amount: what the company is actually billed for the
-    // upcoming year's benefit funding, net of the headcount adjustment and
-    // any credit note carried in from this year.
-    var invoicePayableAmount = totalEntitlementPool + adjustmentAmount - creditNoteAmount;
-
-    // Supporting lists so the headcount adjustment can be audited: who counted
-    // as headcount at the start of the year, and who joined or was terminated
-    // during the year (the movements that produced the net change).
-    var startHeadcountList = STATE.profiles.filter(function(p){ return employedAt(p, startStr); })
-      .map(function(p){ return {name:p.name, allocation:Number(p.annual_allocation)||0}; })
-      .sort(function(a,b){ return a.name.localeCompare(b.name); });
-
-    var joinedDuringYear = STATE.profiles.filter(function(p){
-      return p.role==='user' && p.date_of_joining && p.date_of_joining>startStr && p.date_of_joining<=endStr;
-    });
-    var terminatedDuringYear = STATE.profiles.filter(function(p){
-      return p.role==='user' && p.date_of_termination && p.date_of_termination>=startStr && p.date_of_termination<=endStr;
-    });
-    var membershipChanges = joinedDuringYear.map(function(p){
-      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Joined', date:p.date_of_joining};
-    }).concat(terminatedDuringYear.map(function(p){
-      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Terminated', date:p.date_of_termination};
-    })).sort(function(a,b){ return a.name.localeCompare(b.name); });
-
-    return {
-      year:year, rate:rate, startHeadcount:startHeadcount, endHeadcount:endHeadcount,
-      headcountDelta:headcountDelta, adjustmentUnits:adjustmentUnits, adjustmentAmount:adjustmentAmount,
-      additionalCharge:additionalCharge, headcountCredit:headcountCredit,
-      totalEntitlementPool:totalEntitlementPool, totalApprovedForYear:totalApprovedForYear,
-      totalUnutilized:totalUnutilized, unutilizedByEmployee:unutilizedByEmployee,
-      creditNoteAmount:creditNoteAmount, netAmount:netAmount, invoicePayableAmount:invoicePayableAmount,
-      startHeadcountList:startHeadcountList, membershipChanges:membershipChanges
-    };
-  }
-
   function uniqueYearsFromClaims(claims, currentYear){
     var years = {}; years[currentYear]=true;
     claims.forEach(function(c){ if(c.receipt_date){ years[new Date(c.receipt_date+'T00:00:00').getFullYear()]=true; } });
@@ -450,23 +353,22 @@
       supabase.from('benefits').select('*').order('name'),
       supabase.from('reject_reasons').select('*').order('reason'),
       supabase.from('claims').select('*').order('submitted_at', {ascending:false}),
-      supabase.from('notifications').select('*').order('created_at', {ascending:false})
+      supabase.from('notifications').select('*').order('created_at', {ascending:false}),
+      supabase.from('family_members').select('*').order('name')
     ];
     if(isAdmin){
       calls.push(supabase.from('profiles').select('*').order('name'));
       calls.push(supabase.from('invites').select('*').order('created_at', {ascending:false}));
-      calls.push(supabase.from('app_settings').select('*'));
     }
     return Promise.all(calls).then(function(results){
       STATE.benefits = (results[0].data||[]).map(function(b){ return b.name; });
       STATE.rejectReasons = (results[1].data||[]).map(function(r){ return r.reason; });
       STATE.claims = results[2].data || [];
       STATE.notifications = results[3].data || [];
+      STATE.familyMembers = results[4].data || [];
       if(isAdmin){
-        STATE.profiles = results[4].data || [];
-        STATE.invites = results[5].data || [];
-        STATE.appSettings = {};
-        (results[6].data||[]).forEach(function(s){ STATE.appSettings[s.key] = s.value; });
+        STATE.profiles = results[5].data || [];
+        STATE.invites = results[6].data || [];
       } else {
         STATE.profiles = STATE.profile ? [STATE.profile] : [];
         STATE.invites = [];
@@ -477,7 +379,7 @@
   function subscribeRealtime(){
     if(STATE._realtimeSubscribed || !supabase) return;
     STATE._realtimeSubscribed = true;
-    ['claims','benefits','notifications','profiles','app_settings'].forEach(function(table){
+    ['claims','benefits','notifications','profiles'].forEach(function(table){
       supabase.channel(table+'-rt')
         .on('postgres_changes', {event:'*', schema:'public', table:table}, handleRealtimeChange)
         .subscribe();
@@ -523,10 +425,6 @@
         STATE.session = null; STATE.profile = null; STATE.activeTab = null;
         render();
       }
-      if(event === 'PASSWORD_RECOVERY'){
-        STATE.session = session; STATE.authView = 'reset-password'; STATE.authError=''; STATE.authInfo='';
-        render();
-      }
     });
   }
 
@@ -537,13 +435,8 @@
     var app = document.getElementById('app');
     if(!supabase){ app.innerHTML = renderSetupNeeded(); return; }
     if(STATE.loading){ app.innerHTML = renderLoading() + renderBrandFooter(); return; }
-    if(STATE.authView === 'reset-password'){
-      app.innerHTML = renderResetPassword() + renderBrandFooter();
-    } else if(!STATE.session || !STATE.profile){
-      app.innerHTML = renderAuthScreen() + renderBrandFooter();
-    } else {
-      app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
-    }
+    if(!STATE.session || !STATE.profile){ app.innerHTML = renderAuthScreen() + renderBrandFooter(); return; }
+    app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
     if(STATE.modal){
       var host = document.createElement('div');
       host.innerHTML = renderModal();
@@ -587,17 +480,6 @@
   function renderModal(){
     if(!STATE.modal) return '';
     var m = STATE.modal;
-    if(m.message){
-      return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
-        '<div class="modal-box">'+
-          '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
-          '<div class="modal-body">'+
-            '<p style="margin:0 0 16px;">'+escapeHtml(m.message)+'</p>'+
-            '<button class="btn btn-primary" data-action="close-modal">OK</button>'+
-          '</div>'+
-        '</div>'+
-      '</div>';
-    }
     return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
       '<div class="modal-box">'+
         '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
@@ -629,18 +511,6 @@
         '<button data-action="show-signup">New User Login</button>'+
         '<button data-action="forgot-password">Forgot password?</button>'+
       '</div>'+
-    '</div></div>';
-  }
-
-  function renderResetPassword(){
-    return '<div class="login-wrap"><div class="login-card">'+
-      '<div class="login-brand"><div class="login-logo">FB</div><h1>Set New Password</h1><p class="muted">Choose a new password for your account</p></div>'+
-      '<form data-form="reset-password" class="login-form">'+
-        '<label>New Password<input type="password" name="password" autocomplete="new-password" required placeholder="********" /></label>'+
-        '<label>Confirm Password<input type="password" name="confirmPassword" autocomplete="new-password" required placeholder="********" /></label>'+
-        (STATE.authError ? '<div class="field-error">'+escapeHtml(STATE.authError)+'</div>' : '')+
-        '<button type="submit" class="btn btn-primary btn-block">Set new password</button>'+
-      '</form>'+
     '</div></div>';
   }
 
@@ -729,9 +599,14 @@
 
   function renderClaimForm(){
     var wallet = computeWallet(STATE.profile.id);
+    var myFamily = familyMembersForEmail(STATE.profile.email);
     return '<div class="card">'+cardTitleWithClose('Submit a New Claim')+
       '<div class="info-banner banner-warning">'+escapeHtml(claimCutoffNotice())+'</div>'+
       '<form data-form="submit-claim" class="claim-form">'+
+        (myFamily.length ? '<label>Claiming For<select name="familyMemberId">'+
+          '<option value="">Myself</option>'+
+          myFamily.map(function(f){ return '<option value="'+f.id+'">'+escapeHtml(f.name)+' ('+(f.relationship==='spouse'?'Spouse':'Child')+')</option>'; }).join('')+
+        '</select></label>' : '')+
         '<label>Benefit Category<select name="category" required><option value="">Select a category...</option>'+
           STATE.benefits.map(function(b){ return '<option value="'+escapeHtml(b)+'">'+escapeHtml(b)+'</option>'; }).join('')+
         '</select></label>'+
@@ -793,9 +668,10 @@
     if(!claims.length) return '<div class="empty-state">No submissions found.</div>';
     var colCount = 8 + (showEmployee?1:0) + (adminActions?1:0) + (userActions?1:0);
     var rows = claims.map(function(c){
+      var famMember = c.family_member_id ? familyMemberById(c.family_member_id) : null;
       var row = '<tr>'+
         (showEmployee ? '<td>'+escapeHtml(employeeName(c.employee_id))+'</td>' : '')+
-        '<td>'+escapeHtml(c.category)+'</td>'+
+        '<td>'+escapeHtml(c.category)+(famMember ? '<div class="tiny muted">for '+escapeHtml(famMember.name)+' ('+(famMember.relationship==='spouse'?'Spouse':'Child')+')</div>' : '')+'</td>'+
         '<td>'+escapeHtml(c.vendor||'-')+'</td>'+
         '<td>'+fmtCurrencyAmount(c.currency, c.amount)+((c.currency && c.currency!=='SGD') ? '<div class="tiny muted">\u2248 '+fmtMoney(sgdAmountOf(c))+' SGD</div>' : '')+'</td>'+
         '<td>'+fmtDate(c.receipt_date)+'</td>'+
@@ -900,7 +776,6 @@
         navTab('staff','Employee Management')+
         navTab('benefits','Benefit Categories')+
         navTab('access','User Access')+
-        navTab('finance','Finance')+
         navTab('reports','Reports')+
       '</div>'+
       '<div class="content">'+
@@ -908,7 +783,6 @@
          tab==='staff' ? renderAdminStaff() :
          tab==='benefits' ? renderAdminBenefits() :
          tab==='access' ? renderAdminAccess() :
-         tab==='finance' ? renderAdminFinance() :
          tab==='reports' ? renderAdminReports() :
          renderAdminApprovals())+
       '</div></div>';
@@ -947,12 +821,17 @@
           '<button class="btn btn-sm btn-danger" data-action="delete-profile" data-id="'+p.id+'">Delete</button>';
       }
       var roleLabel = p.role==='admin' ? 'Admin' : 'User';
+      var famList = familyMembersForEmail(p.email);
+      var familyCell = famList.length
+        ? famList.map(function(f){ return escapeHtml(f.name)+' ('+(f.relationship==='spouse'?'Spouse':'Child')+')'; }).join(', ')
+        : '-';
       return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+escapeHtml(p.email)+'</td>'+
         '<td><span class="role-chip">'+roleLabel+'</span></td>'+
         '<td>'+allocCell+'</td>'+
         '<td>'+fmtDate(p.date_of_joining)+'</td>'+
         '<td>'+(p.effective_date ? fmtDate(p.effective_date) : '-')+'</td>'+
         '<td>'+terminationCell+'</td>'+
+        '<td class="tiny">'+familyCell+'</td>'+
         '<td><span class="status-pill '+(p.active?'status-approved':'status-rejected')+'">'+(p.active?'Active':'Inactive')+'</span></td>'+
         '<td class="actions-cell">'+actionsCell+'</td></tr>';
     }).join('');
@@ -979,19 +858,29 @@
 
     return ''+
     '<div class="card"><div class="card-title">Add Employee</div>'+
+      '<div class="filter-row" id="add-employee-mode-row" style="margin-bottom:14px;">'+
+        '<button type="button" class="chip-filter active" data-action="add-employee-mode" data-mode="solo">Employee Only</button>'+
+        '<button type="button" class="chip-filter" data-action="add-employee-mode" data-mode="family">Employee and Family</button>'+
+      '</div>'+
       '<form data-form="invite-staff" class="inline-form">'+
         '<label class="mini-field">Full Name<input type="text" name="name" placeholder="e.g. Jane Lim" required /></label>'+
+        '<label class="mini-field">NRIC<input type="text" name="nric" placeholder="e.g. S1234567A" style="width:150px" required /></label>'+
         '<label class="mini-field">Work Email<input type="email" name="email" placeholder="jane@company.com" required /></label>'+
         '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" required /></label>'+
         '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" style="width:160px" required /></label>'+
         '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" required /></label>'+
         '<label class="mini-field">Entitlement (SGD)<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" required /></label>'+
+        '<div id="family-section" style="display:none;width:100%;border-top:1px solid var(--border);margin-top:14px;padding-top:14px;">'+
+          '<div class="field-hint" style="margin-bottom:10px;">Family members are listed for claim eligibility only - they do not get their own login, and their claims count against this employee\'s own entitlement above. Children stop being eligible to claim once they turn 21.</div>'+
+          '<div id="family-rows"></div>'+
+          '<button type="button" class="btn btn-ghost btn-sm" data-action="add-family-row">+ Add Family Member</button>'+
+        '</div>'+
         '<button type="submit" class="btn btn-primary">Add Employee</button>'+
       '</form>'+
       '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. A welcome email with sign-up instructions is sent automatically once the Effective Date arrives.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Bulk Invite (CSV)</div>'+
-      '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation,dateOfEmployment,paynowMobile,effectiveDate. First row is treated as a header and skipped. The last three columns are optional.</div>'+
+      '<div class="muted small" style="margin-bottom:10px;">Columns: type,name,email,dateOfEmployment,effectiveDate,paynowMobile,entitlement,relationship,linkedEmployeeEmail,nric. First row is treated as a header and skipped. type is "employee" or "family". nric applies to both row types (this person\'s own NRIC or Birth Cert no.). For family rows, only name, relationship (spouse/child), linkedEmployeeEmail, and nric are needed - date of birth can be added via the family section above after import.</div>'+
       '<div class="dropzone" id="staff-csv-dropzone">'+
         '<input type="file" id="staff-csv-input" accept=".csv" />'+
         '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
@@ -1003,7 +892,7 @@
     '<div class="card"><div class="card-title">Employee Directory</div>'+
       '<div class="filter-row">'+staffFilters.map(function(f){ return '<button class="chip-filter '+(roleFilter===f.key?'active':'')+'" data-action="filter-staff" data-filter="'+f.key+'">'+f.label+'</button>'; }).join('')+'</div>'+
       '<div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Date of Employment</th><th>Effective Date</th><th>Date of Termination</th><th>Status</th><th>Actions</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Date of Employment</th><th>Effective Date</th><th>Date of Termination</th><th>Family</th><th>Status</th><th>Actions</th></tr></thead>'+
       '<tbody>'+staffRows+'</tbody></table></div>'+
       '<div class="field-hint">Deleting an employee removes their account, all their claim history, and their notifications - permanently, and this cannot be undone. Their login itself still technically exists in Supabase until removed from the dashboard\'s Authentication &gt; Users page too, but they won\'t be able to do anything with it here once deleted.</div>'+
     '</div>';
@@ -1045,76 +934,6 @@
     var sorted = rows.slice().sort(function(a,b){ return getter(a)-getter(b); });
     if(direction==='desc') sorted.reverse();
     return sorted;
-  }
-
-  function renderAdminFinance(){
-    var now = new Date();
-    var year = (STATE.invoiceYear!=null) ? STATE.invoiceYear : (now.getFullYear()-1);
-    var yearOptions = buildInvoiceYearOptions();
-    var inv = computeAnnualInvoice(year);
-    var invoiceDate = '2 Jan '+(year+1);
-
-    var rateCell = STATE.editingInvoiceRate
-      ? '<input type="number" min="0" step="0.01" style="width:100px" id="invoice-rate-input" value="'+inv.rate+'"/> <button class="btn btn-sm btn-primary" data-action="save-invoice-rate">Save</button>'
-      : '<span class="muted">Rate: '+fmtMoney(inv.rate)+' / head / year</span> <button class="link-btn" data-action="edit-invoice-rate">Edit</button>';
-
-    var empRows = inv.unutilizedByEmployee.map(function(e){
-      return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtMoney(e.allocation)+'</td><td>'+fmtMoney(e.approved)+'</td><td>'+fmtMoney(e.unutilized)+'</td></tr>';
-    }).join('');
-
-    return ''+
-    '<div class="card">'+
-      '<div class="card-title-row">'+
-        '<div class="card-title">Annual Invoice</div>'+
-        '<div class="report-controls" style="margin-bottom:0;">'+
-          '<select data-action="set-invoice-year">'+yearOptions.map(function(y){ return '<option value="'+y+'" '+(y===year?'selected':'')+'>'+y+'</option>'; }).join('')+'</select>'+
-          '<button class="btn btn-ghost btn-sm" data-action="export-invoice-pdf">Export to PDF</button>'+
-        '</div>'+
-      '</div>'+
-      '<div class="report-summary" style="margin-bottom:16px;">Period: 1 Jan '+year+' - 31 Dec '+year+' &middot; Invoice date '+invoiceDate+' &middot; '+rateCell+'</div>'+
-      '<div class="grid-cards">'+
-        '<div class="card stat"><div class="stat-label">Headcount Adjustment</div><div class="stat-value">'+fmtMoney(inv.adjustmentAmount)+'</div></div>'+
-        '<div class="card stat"><div class="stat-label">Unutilised Benefit</div><div class="stat-value">'+fmtMoney(inv.totalUnutilized)+'</div></div>'+
-        '<div class="card stat"><div class="stat-label">Total Credit Note</div><div class="stat-value">'+fmtMoney(inv.creditNoteAmount)+'</div></div>'+
-        '<div class="card stat"><div class="stat-label">'+(inv.netAmount>=0?'Net Amount Due':'Net Credit Balance')+'</div><div class="stat-value">'+fmtMoney(Math.abs(inv.netAmount))+'</div></div>'+
-        '<div class="card stat highlight"><div class="stat-label">Invoice Payable Amount</div><div class="stat-value">'+fmtMoney(inv.invoicePayableAmount)+'</div></div>'+
-      '</div>'+
-    '</div>'+
-    '<div class="card">'+
-      '<div class="card-title">Calculation Detail</div>'+
-      '<details><summary class="link-btn" style="cursor:pointer;">Headcount Adjustment</summary>'+
-        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table"><tbody>'+
-          '<tr><td>Headcount as at 1 Jan '+year+'</td><td>'+inv.startHeadcount+'</td></tr>'+
-          '<tr><td>Headcount as at 31 Dec '+year+'</td><td>'+inv.endHeadcount+'</td></tr>'+
-          '<tr><td>Net Change</td><td>'+inv.headcountDelta+'</td></tr>'+
-          '<tr><td>Adjustment Units (Net Change &divide; 2)</td><td>'+inv.adjustmentUnits+'</td></tr>'+
-          '<tr><td>Rate per Headcount</td><td>'+fmtMoney(inv.rate)+'</td></tr>'+
-        '</tbody></table></div>'+
-      '</details>'+
-      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Headcount as at 1 Jan '+year+' ('+inv.startHeadcountList.length+' employees)</summary>'+
-        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
-        '<thead><tr><th>Employee</th><th>Annual Allocation</th></tr></thead>'+
-        '<tbody>'+(inv.startHeadcountList.length ? inv.startHeadcountList.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="2" class="muted">No employees on record as at 1 Jan '+year+'.</td></tr>')+'</tbody></table></div>'+
-      '</details>'+
-      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Membership Changes in '+year+' ('+inv.membershipChanges.length+' employees)</summary>'+
-        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
-        '<thead><tr><th>Employee</th><th>Change</th><th>Date</th><th>Annual Allocation</th></tr></thead>'+
-        '<tbody>'+(inv.membershipChanges.length ? inv.membershipChanges.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+e.change+'</td><td>'+fmtDate(e.date)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="4" class="muted">No joiners or terminations recorded in '+year+'.</td></tr>')+'</tbody></table></div>'+
-      '</details>'+
-      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Unutilised Benefit</summary>'+
-        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table"><tbody>'+
-          '<tr><td>Total Entitlement Pool for '+year+'</td><td>'+fmtMoney(inv.totalEntitlementPool)+'</td></tr>'+
-          '<tr><td>Total Approved Claims for '+year+'</td><td>'+fmtMoney(inv.totalApprovedForYear)+'</td></tr>'+
-          '<tr><td>Total Unutilised Amount</td><td>'+fmtMoney(inv.totalUnutilized)+'</td></tr>'+
-        '</tbody></table></div>'+
-      '</details>'+
-      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">By Employee</summary>'+
-        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
-        '<thead><tr><th>Employee</th><th>Entitlement</th><th>Approved Claims</th><th>Unutilised</th></tr></thead>'+
-        '<tbody>'+empRows+'</tbody></table></div>'+
-      '</details>'+
-      '<div class="field-hint" style="margin-top:14px;">Credit note balance can be applied to offset next year\'s benefit charges.</div>'+
-    '</div>';
   }
 
   function renderAdminReports(){
@@ -1439,142 +1258,6 @@
     }
   }
 
-  function exportInvoicePDF(){
-    if(typeof window.jspdf==='undefined' || !window.jspdf.jsPDF){ showToast('PDF export library did not load (needs an internet connection).', 'error'); return; }
-    var now = new Date();
-    var year = (STATE.invoiceYear!=null) ? STATE.invoiceYear : (now.getFullYear()-1);
-    var inv = computeAnnualInvoice(year);
-    var invoiceDate = '2 Jan '+(year+1);
-    var adjustmentLabel = inv.adjustmentAmount>=0 ? 'Additional Headcount Charge' : 'Headcount Reduction Credit';
-
-    try{
-      var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
-      var pageWidth = doc.internal.pageSize.getWidth();
-      var margin = 15;
-      var brandColor = [19,78,74];
-
-      doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.rect(0, 0, pageWidth, 38, 'F');
-      var logoW = 42, logoH = logoW*(90/285);
-      doc.setFillColor(255,255,255);
-      doc.roundedRect(margin-4, 7, logoW+8, logoH+8, 2, 2, 'F');
-      doc.addImage(CRESCO_LOGO_DATA_URI, 'PNG', margin, 11, logoW, logoH);
-      doc.setTextColor(255,255,255);
-      doc.setFontSize(15);
-      doc.text('Annual Invoice', pageWidth-margin, 17, {align:'right'});
-      doc.setFontSize(10);
-      doc.text('Headcount Adjustment & Credit Note', pageWidth-margin, 24, {align:'right'});
-      doc.setFontSize(9);
-      doc.text('Flex Benefits Portal by Cresco Insurance Agency Pte Ltd', pageWidth-margin, 32, {align:'right'});
-
-      doc.setTextColor(40,40,40);
-      doc.setFontSize(9);
-      doc.text('Invoice Date: '+invoiceDate, margin, 46);
-      doc.text('Period Covered: 1 Jan '+year+' - 31 Dec '+year, margin, 52);
-
-      var cy = 62;
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Headcount Adjustment', margin, cy);
-      doc.autoTable({
-        startY: cy+4, margin:{left:margin, right:margin},
-        body: [
-          ['Headcount as at 1 Jan '+year, String(inv.startHeadcount)],
-          ['Headcount as at 31 Dec '+year, String(inv.endHeadcount)],
-          ['Net Change', String(inv.headcountDelta)],
-          ['Adjustment Units (Net Change / 2)', String(inv.adjustmentUnits)],
-          ['Rate per Headcount per Year', fmtMoney(inv.rate)],
-          [adjustmentLabel, fmtMoney(Math.abs(inv.adjustmentAmount))]
-        ],
-        theme:'plain', styles:{fontSize:10, cellPadding:1.5},
-        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
-      });
-      cy = doc.lastAutoTable.finalY + 12;
-
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Unutilised Benefit (Credit Note)', margin, cy);
-      doc.autoTable({
-        startY: cy+4, margin:{left:margin, right:margin},
-        body: [
-          ['Total Entitlement Pool for '+year, fmtMoney(inv.totalEntitlementPool)],
-          ['Total Approved Claims for '+year, fmtMoney(inv.totalApprovedForYear)],
-          ['Total Unutilised Amount', fmtMoney(inv.totalUnutilized)]
-        ],
-        theme:'plain', styles:{fontSize:10, cellPadding:1.5},
-        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
-      });
-      cy = doc.lastAutoTable.finalY + 12;
-
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Invoice Summary', margin, cy);
-      doc.autoTable({
-        startY: cy+4, margin:{left:margin, right:margin},
-        body: [
-          ['Additional Headcount Charge', fmtMoney(inv.additionalCharge)],
-          ['Less: Credit Note (Unutilised + Headcount Reduction)', '-'+fmtMoney(inv.creditNoteAmount)],
-          [inv.netAmount>=0?'Net Amount Due':'Net Credit Balance', fmtMoney(Math.abs(inv.netAmount))],
-          ['Invoice Payable Amount', fmtMoney(inv.invoicePayableAmount)]
-        ],
-        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:10, cellPadding:2},
-        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
-      });
-      cy = doc.lastAutoTable.finalY + 10;
-      doc.setFontSize(8); doc.setTextColor(120,120,120);
-      var noteLines = doc.splitTextToSize('Note: Any credit note balance may be applied to offset the following year\'s flex benefit charges.', pageWidth-margin*2);
-      doc.text(noteLines, margin, cy);
-
-      doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Headcount as at 1 Jan '+year+' - by Employee', margin, 18);
-      doc.setFontSize(9); doc.setTextColor(100,100,100);
-      doc.text('Supporting detail for the headcount adjustment above. '+inv.startHeadcountList.length+' employee(s) counted.', margin, 24);
-      if(inv.startHeadcountList.length){
-        var startHcRows = inv.startHeadcountList.map(function(e){ return [e.name, fmtMoney(e.allocation)]; });
-        doc.autoTable({
-          startY: 30, margin:{left:margin, right:margin},
-          head:[['Employee','Annual Allocation (SGD)']], body: startHcRows,
-          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
-        });
-      } else {
-        doc.setFontSize(10); doc.setTextColor(120,120,120);
-        doc.text('No employees on record as at 1 Jan '+year+'.', margin, 34);
-      }
-
-      doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Membership Changes in '+year, margin, 18);
-      doc.setFontSize(9); doc.setTextColor(100,100,100);
-      doc.text('Employees who joined or were terminated during the year - the movements behind the net change above.', margin, 24);
-      if(inv.membershipChanges.length){
-        var changeRows = inv.membershipChanges.map(function(e){ return [e.name, e.change, fmtDate(e.date), fmtMoney(e.allocation)]; });
-        doc.autoTable({
-          startY: 30, margin:{left:margin, right:margin},
-          head:[['Employee','Change','Date','Annual Allocation (SGD)']], body: changeRows,
-          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
-        });
-      } else {
-        doc.setFontSize(10); doc.setTextColor(120,120,120);
-        doc.text('No joiners or terminations recorded in '+year+'.', margin, 34);
-      }
-
-      doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Unutilised Amount by Employee - '+year, margin, 18);
-      var empRows = inv.unutilizedByEmployee.map(function(e){
-        return [e.name, fmtMoney(e.allocation), fmtMoney(e.approved), fmtMoney(e.unutilized)];
-      });
-      doc.autoTable({
-        startY: 24, margin:{left:margin, right:margin},
-        head:[['Employee','Entitlement (SGD)','Approved Claims (SGD)','Unutilised (SGD)']], body: empRows,
-        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
-      });
-
-      doc.save('flex-benefits-invoice-'+year+'.pdf');
-    }catch(err){
-      console.error(err);
-      showToast('Could not generate the invoice PDF. Check the console for details.', 'error');
-    }
-  }
-
   /* =========================================================
      ACTION HANDLERS - AUTH
   ========================================================== */
@@ -1597,26 +1280,6 @@
         if(err.message!=='deactivated'){ STATE.authError = err.message; }
         render();
       });
-    });
-  }
-
-  function doResetPassword(form){
-    var password = form.password.value;
-    var confirmPassword = form.confirmPassword.value;
-    if(password !== confirmPassword){ STATE.authError='Passwords do not match.'; render(); return Promise.resolve(); }
-    if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
-    STATE.authError='';
-    var btn = form.querySelector('button[type=submit]');
-    btn.disabled = true; btn.textContent = 'Saving...';
-    return supabase.auth.updateUser({password:password}).then(function(res){
-      if(res.error){ STATE.authError = res.error.message; render(); return; }
-      return supabase.auth.signOut().then(function(){
-        STATE.session=null; STATE.profile=null; STATE.authView='login'; STATE.authError='';
-        STATE.authInfo='Password updated! Please log in with your new password.';
-        render();
-      });
-    }).catch(function(err){
-      STATE.authError = (err && err.message) || String(err); render();
     });
   }
 
@@ -1674,8 +1337,7 @@
     var redirectTo = window.location.origin + window.location.pathname;
     return withTimeout(supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}), 8000, 'Password reset request').then(function(res){
       if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
-      STATE.modal = {title:'Check your email', message:'We\'ve sent a password reset link to '+email+'. Check your inbox (and spam folder) for an email from noreply@cresco.sg.'};
-      render();
+      showToast('Password reset email sent - check your inbox.', 'success');
     }).catch(function(err){
       showToast('Could not send reset email: '+((err && err.message) || err), 'error');
     }).then(function(){
@@ -1712,6 +1374,7 @@
     var amount = parseFloat(form.amount.value);
     var receiptDate = form.receiptDate.value;
     var file = form.receipt.files[0];
+    var familyMemberId = form.familyMemberId ? form.familyMemberId.value : '';
     if(!category || !vendor || !amount || amount<=0 || !receiptDate || !file){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
     if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return Promise.resolve(); }
 
@@ -1721,6 +1384,18 @@
       STATE.claimFormError = 'This receipt is dated '+fmtDate(receiptDate)+', which is not from '+currentYear+'. Only '+currentYear+' receipts can be claimed - your benefits reset every 1 January.';
       render();
       return Promise.resolve();
+    }
+
+    if(familyMemberId){
+      var fam = familyMemberById(familyMemberId);
+      if(fam && fam.relationship==='child' && fam.date_of_birth){
+        var age = ageAtDate(fam.date_of_birth, receiptDate);
+        if(age!==null && age>=21){
+          STATE.claimFormError = fam.name+' turned 21 before this receipt date and is no longer eligible for claims.';
+          render();
+          return Promise.resolve();
+        }
+      }
     }
 
     var btn = form.querySelector('button[type=submit]');
@@ -1740,7 +1415,8 @@
         return supabase.from('claims').insert({
           employee_id: STATE.session.user.id, category:category, vendor:vendor,
           amount:amount, currency:currency, amount_sgd:amountSgd, exchange_rate:rate,
-          receipt_date:receiptDate, receipt_path:receipt.path, receipt_name:receipt.name, status:'pending'
+          receipt_date:receiptDate, receipt_path:receipt.path, receipt_name:receipt.name, status:'pending',
+          family_member_id: familyMemberId || null
         });
       });
     }).then(function(res){
@@ -1874,27 +1550,87 @@
   /* =========================================================
      ACTION HANDLERS - ADMIN: STAFF / INVITES / BENEFITS / ACCESS
   ========================================================== */
+  var familyRowCounter = 0;
+  function makeFamilyRow(){
+    familyRowCounter++;
+    var container = document.getElementById('family-rows');
+    if(!container) return;
+    var row = document.createElement('div');
+    row.className = 'family-row';
+    row.innerHTML =
+      '<input type="text" class="family-name" placeholder="Family member name" style="width:180px" />'+
+      '<select class="family-relationship" style="width:110px"><option value="spouse">Spouse</option><option value="child">Child</option></select>'+
+      '<input type="date" class="family-dob" title="Date of birth" style="width:150px" />'+
+      '<input type="text" class="family-nric" placeholder="NRIC / Birth Cert no." style="width:170px" />'+
+      '<button type="button" class="btn btn-ghost btn-sm" data-remove-family-row="1">Remove</button>';
+    row.querySelector('[data-remove-family-row]').addEventListener('click', function(){ row.remove(); });
+    container.appendChild(row);
+  }
+  function setAddEmployeeMode(mode){
+    var section = document.getElementById('family-section');
+    var row = document.getElementById('add-employee-mode-row');
+    if(!section || !row) return;
+    row.querySelectorAll('[data-action="add-employee-mode"]').forEach(function(btn){
+      btn.classList.toggle('active', btn.dataset.mode===mode);
+    });
+    section.style.display = (mode==='family') ? 'block' : 'none';
+    if(mode==='family' && document.getElementById('family-rows').children.length===0){
+      makeFamilyRow();
+    }
+  }
+
+  function collectFamilyRowsFromDom(){
+    var rows = [];
+    var rowEls = document.querySelectorAll('#family-rows .family-row');
+    for(var i=0;i<rowEls.length;i++){
+      var el = rowEls[i];
+      var name = el.querySelector('.family-name').value.trim();
+      var relationship = el.querySelector('.family-relationship').value;
+      var dob = el.querySelector('.family-dob').value || null;
+      var nric = el.querySelector('.family-nric').value.trim() || null;
+      if(!name) continue;
+      rows.push({name:name, relationship:relationship, date_of_birth:dob, nric:nric});
+    }
+    return rows;
+  }
+
   function inviteStaff(form){
     var name = form.name.value.trim();
+    var nric = form.nric.value.trim();
     var email = form.email.value.trim().toLowerCase();
     var dateOfEmployment = form.dateOfEmployment.value;
     var effectiveDate = form.effectiveDate.value;
     var paynowMobile = form.paynowMobile.value.trim();
     var allocRaw = form.annualAllocation.value;
     var alloc = parseFloat(allocRaw);
-    if(!name || !email || !dateOfEmployment || !effectiveDate || !paynowMobile || allocRaw==='' || isNaN(alloc)){
+    if(!name || !nric || !email || !dateOfEmployment || !effectiveDate || !paynowMobile || allocRaw==='' || isNaN(alloc)){
       showToast('Please complete all fields before adding the employee.', 'error');
       return Promise.resolve();
     }
+    var familySectionVisible = document.getElementById('family-section').style.display !== 'none';
+    var familyRows = familySectionVisible ? collectFamilyRowsFromDom() : [];
+    if(familySectionVisible && familyRows.length===0){
+      showToast('Add at least one family member, or switch back to "Employee Only".', 'error');
+      return Promise.resolve();
+    }
     return supabase.from('invites').upsert(
-      {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false},
+      {email:email, name:name, nric:nric, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent_at:null, invited_by:STATE.session.user.id, used:false},
       {onConflict:'email'}
     ).then(function(res){
-      if(res.error){ showToast('Could not add employee: '+res.error.message, 'error'); return; }
-      showToast('Invite created for '+email+'.', 'success');
+      if(res.error){ showToast('Could not add employee: '+res.error.message, 'error'); return Promise.reject(res.error); }
+      if(familyRows.length){
+        var familyPayload = familyRows.map(function(f){ return {employee_email:email, name:f.name, relationship:f.relationship, date_of_birth:f.date_of_birth, nric:f.nric}; });
+        return supabase.from('family_members').insert(familyPayload).then(function(famRes){
+          if(famRes.error){ showToast('Employee added, but family members could not be saved: '+famRes.error.message, 'error'); return; }
+        });
+      }
+    }).then(function(){
+      showToast('Invite created for '+email+(familyRows.length?' with '+familyRows.length+' family member(s).':'.'), 'success');
       form.reset();
+      document.getElementById('family-rows').innerHTML = '';
+      setAddEmployeeMode('solo');
       return loadAppData();
-    }).then(function(){ render(); });
+    }).then(function(){ render(); }).catch(function(){ /* error already shown */ });
   }
 
   function handleStaffCsv(file){
@@ -1902,23 +1638,42 @@
     return file.text().then(function(text){
       var lines = text.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
       if(lines.length<2){ showToast('CSV appears to be empty.', 'error'); return; }
-      var rows = [];
+      var inviteRows = [];
+      var familyRows = [];
       for(var i=1;i<lines.length;i++){
         var parts = lines[i].split(',').map(function(p){ return p.trim(); });
         if(parts.length<2) continue;
-        var name=parts[0], email=(parts[1]||'').toLowerCase(), alloc=parseFloat(parts[2])||1000;
-        var dateOfJoining = parts[3] && parts[3].length ? parts[3] : null;
-        var paynowMobile = parts[4] && parts[4].length ? parts[4] : null;
-        var effectiveDate = parts[5] && parts[5].length ? parts[5] : null;
-        if(!name || !email) continue;
-        rows.push({email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false});
+        var type = (parts[0]||'employee').toLowerCase();
+        var name = parts[1];
+        if(!name) continue;
+        if(type==='family'){
+          var relationship = (parts[7]||'').toLowerCase();
+          var linkedEmail = (parts[8]||'').toLowerCase();
+          var nric = parts[9] && parts[9].length ? parts[9] : null;
+          if(!linkedEmail || (relationship!=='spouse' && relationship!=='child')) continue;
+          familyRows.push({employee_email:linkedEmail, name:name, relationship:relationship, date_of_birth:null, nric:nric});
+        } else {
+          var email=(parts[2]||'').toLowerCase();
+          if(!email) continue;
+          var dateOfJoining = parts[3] && parts[3].length ? parts[3] : null;
+          var effectiveDate = parts[4] && parts[4].length ? parts[4] : null;
+          var paynowMobile = parts[5] && parts[5].length ? parts[5] : null;
+          var alloc = parseFloat(parts[6])||1000;
+          var empNric = parts[9] && parts[9].length ? parts[9] : null;
+          inviteRows.push({email:email, name:name, nric:empNric, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent_at:null, invited_by:STATE.session.user.id, used:false});
+        }
       }
-      if(!rows.length){ showToast('No valid rows found in that CSV.', 'error'); return; }
-      return supabase.from('invites').upsert(rows, {onConflict:'email'}).then(function(res){
+      if(!inviteRows.length){ showToast('No valid employee rows found in that CSV.', 'error'); return; }
+      return supabase.from('invites').upsert(inviteRows, {onConflict:'email'}).then(function(res){
         if(res.error){ showToast('Bulk invite failed: '+res.error.message, 'error'); return; }
-        showToast(rows.length+' invite(s) created or updated.', 'success');
-        return loadAppData();
-      });
+        if(familyRows.length){
+          return supabase.from('family_members').insert(familyRows).then(function(famRes){
+            if(famRes.error){ showToast(inviteRows.length+' employee(s) added, but family rows failed: '+famRes.error.message, 'error'); return; }
+            showToast(inviteRows.length+' employee(s) and '+familyRows.length+' family member(s) added.', 'success');
+          });
+        }
+        showToast(inviteRows.length+' invite(s) created or updated.', 'success');
+      }).then(function(){ return loadAppData(); });
     }).then(function(){ render(); }).catch(function(){ showToast('Could not read that CSV file.', 'error'); });
   }
 
@@ -1994,18 +1749,6 @@
     return supabase.from('profiles').update({date_of_termination: val || null}).eq('id', id).then(function(res){
       if(res.error){ showToast('Could not update date of termination: '+res.error.message, 'error'); return; }
       showToast('Date of termination updated.', 'success');
-      return loadAppData();
-    }).then(function(){ render(); });
-  }
-
-  function saveInvoiceRate(){
-    var input = document.getElementById('invoice-rate-input');
-    var val = input ? parseFloat(input.value) : NaN;
-    if(isNaN(val) || val<0){ showToast('Please enter a valid rate.', 'error'); return Promise.resolve(); }
-    STATE.editingInvoiceRate = false;
-    return supabase.from('app_settings').upsert({key:'invoice_rate_per_head', value:String(val)}, {onConflict:'key'}).then(function(res){
-      if(res.error){ showToast('Could not update rate: '+res.error.message, 'error'); return; }
-      showToast('Charge per headcount per year updated.', 'success');
       return loadAppData();
     }).then(function(){ render(); });
   }
@@ -2086,11 +1829,10 @@
       case 'remove-benefit': return removeBenefit(btn.dataset.cat);
       case 'export-report': exportReportExcel(); return Promise.resolve();
       case 'export-report-pdf': exportReportPDF(); return Promise.resolve();
-      case 'edit-invoice-rate': STATE.editingInvoiceRate=true; render(); return Promise.resolve();
-      case 'save-invoice-rate': return saveInvoiceRate();
-      case 'export-invoice-pdf': exportInvoicePDF(); return Promise.resolve();
       case 'filter-history': STATE.historyFilter=btn.dataset.filter; render(); return Promise.resolve();
       case 'filter-staff': STATE.staffRoleFilter=btn.dataset.filter; render(); return Promise.resolve();
+      case 'add-employee-mode': setAddEmployeeMode(btn.dataset.mode); return Promise.resolve();
+      case 'add-family-row': makeFamilyRow(); return Promise.resolve();
       default: return Promise.resolve();
     }
   }
@@ -2102,7 +1844,6 @@
     var type = form.dataset.form;
     if(type==='login') return doLogin(form);
     if(type==='signup') return doSignup(form);
-    if(type==='reset-password') return doResetPassword(form);
     if(type==='submit-claim') return submitClaim(form);
     if(type==='invite-staff') return inviteStaff(form);
     if(type==='add-benefit') return addBenefit(form);
@@ -2133,7 +1874,6 @@
       case 'reject-reason-select': toggleOtherReasonField(target); return Promise.resolve();
       case 'set-report-month': STATE.reportMonth = parseInt(target.value,10); render(); return Promise.resolve();
       case 'set-report-year': STATE.reportYear = (target.value==='ytd') ? 'ytd' : parseInt(target.value,10); render(); return Promise.resolve();
-      case 'set-invoice-year': STATE.invoiceYear = parseInt(target.value,10); render(); return Promise.resolve();
       default: return Promise.resolve();
     }
   }
