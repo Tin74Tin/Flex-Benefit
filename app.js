@@ -1337,7 +1337,7 @@
       doc.setFontSize(11);
       doc.text('Monthly Utilisation Report - '+periodLabel, margin, 27);
       doc.setFontSize(9);
-      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for HR', margin, 34);
+      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for '+getClientCompanyName(), margin, 34);
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
