@@ -578,6 +578,17 @@
   function renderModal(){
     if(!STATE.modal) return '';
     var m = STATE.modal;
+    if(m.message){
+      return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
+        '<div class="modal-box">'+
+          '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
+          '<div class="modal-body">'+
+            '<p style="margin:0 0 16px;">'+escapeHtml(m.message)+'</p>'+
+            '<button class="btn btn-primary" data-action="close-modal">OK</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    }
     return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
       '<div class="modal-box">'+
         '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
@@ -1622,7 +1633,8 @@
     var redirectTo = window.location.origin + window.location.pathname;
     return withTimeout(supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}), 8000, 'Password reset request').then(function(res){
       if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
-      showToast('Password reset email sent - check your inbox.', 'success');
+      STATE.modal = {title:'Check your email', message:'We\'ve sent a password reset link to '+email+'. Check your inbox (and spam folder) for an email from noreply@cresco.sg.'};
+      render();
     }).catch(function(err){
       showToast('Could not send reset email: '+((err && err.message) || err), 'error');
     }).then(function(){
