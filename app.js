@@ -523,6 +523,10 @@
         STATE.session = null; STATE.profile = null; STATE.activeTab = null;
         render();
       }
+      if(event === 'PASSWORD_RECOVERY'){
+        STATE.session = session; STATE.authView = 'reset-password'; STATE.authError=''; STATE.authInfo='';
+        render();
+      }
     });
   }
 
@@ -533,6 +537,7 @@
     var app = document.getElementById('app');
     if(!supabase){ app.innerHTML = renderSetupNeeded(); return; }
     if(STATE.loading){ app.innerHTML = renderLoading() + renderBrandFooter(); return; }
+    if(STATE.authView === 'reset-password'){ app.innerHTML = renderResetPassword() + renderBrandFooter(); return; }
     if(!STATE.session || !STATE.profile){ app.innerHTML = renderAuthScreen() + renderBrandFooter(); return; }
     app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
     if(STATE.modal){
@@ -620,6 +625,18 @@
         '<button data-action="show-signup">New User Login</button>'+
         '<button data-action="forgot-password">Forgot password?</button>'+
       '</div>'+
+    '</div></div>';
+  }
+
+  function renderResetPassword(){
+    return '<div class="login-wrap"><div class="login-card">'+
+      '<div class="login-brand"><div class="login-logo">FB</div><h1>Set New Password</h1><p class="muted">Choose a new password for your account</p></div>'+
+      '<form data-form="reset-password" class="login-form">'+
+        '<label>New Password<input type="password" name="password" autocomplete="new-password" required placeholder="********" /></label>'+
+        '<label>Confirm Password<input type="password" name="confirmPassword" autocomplete="new-password" required placeholder="********" /></label>'+
+        (STATE.authError ? '<div class="field-error">'+escapeHtml(STATE.authError)+'</div>' : '')+
+        '<button type="submit" class="btn btn-primary btn-block">Set new password</button>'+
+      '</form>'+
     '</div></div>';
   }
 
@@ -1579,6 +1596,26 @@
     });
   }
 
+  function doResetPassword(form){
+    var password = form.password.value;
+    var confirmPassword = form.confirmPassword.value;
+    if(password !== confirmPassword){ STATE.authError='Passwords do not match.'; render(); return Promise.resolve(); }
+    if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
+    STATE.authError='';
+    var btn = form.querySelector('button[type=submit]');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    return supabase.auth.updateUser({password:password}).then(function(res){
+      if(res.error){ STATE.authError = res.error.message; render(); return; }
+      return supabase.auth.signOut().then(function(){
+        STATE.session=null; STATE.profile=null; STATE.authView='login'; STATE.authError='';
+        STATE.authInfo='Password updated! Please log in with your new password.';
+        render();
+      });
+    }).catch(function(err){
+      STATE.authError = (err && err.message) || String(err); render();
+    });
+  }
+
   function doSignup(form){
     var email = form.email.value.trim();
     var password = form.password.value;
@@ -2061,6 +2098,7 @@
     var type = form.dataset.form;
     if(type==='login') return doLogin(form);
     if(type==='signup') return doSignup(form);
+    if(type==='reset-password') return doResetPassword(form);
     if(type==='submit-claim') return submitClaim(form);
     if(type==='invite-staff') return inviteStaff(form);
     if(type==='add-benefit') return addBenefit(form);
