@@ -986,8 +986,8 @@
         '<label class="mini-field">Full Name<input type="text" name="name" placeholder="e.g. Jane Lim" required /></label>'+
         '<label class="mini-field">NRIC<input type="text" name="nric" placeholder="e.g. S1234567A" style="width:150px" required /></label>'+
         '<label class="mini-field">Work Email<input type="email" name="email" placeholder="jane@company.com" required /></label>'+
-        '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" required /></label>'+
-        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" style="width:160px" required /></label>'+
+        '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" id="add-emp-date-of-employment" style="width:160px" required /></label>'+
+        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" id="add-emp-effective-date" style="width:160px" required /></label>'+
         '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" required /></label>'+
         '<label class="mini-field">Entitlement (SGD)<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" required /></label>'+
         '<div id="family-section" style="display:none;width:100%;border-top:1px solid var(--border);margin-top:14px;padding-top:14px;">'+
@@ -997,7 +997,7 @@
         '</div>'+
         '<button type="submit" class="btn btn-primary">Add Employee</button>'+
       '</form>'+
-      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. A welcome email with sign-up instructions is sent automatically once the Effective Date arrives.</div>'+
+      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. A welcome email with sign-up instructions is sent automatically once the Effective Date arrives. Effective Date cannot be earlier than Date of Employment.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Bulk Invite (CSV)</div>'+
       '<div class="muted small" style="margin-bottom:10px;">Columns: type,name,email,dateOfEmployment,effectiveDate,paynowMobile,entitlement,relationship,linkedEmployeeEmail,nric. First row is treated as a header and skipped. type is "employee" or "family". nric applies to both row types (this person\'s own NRIC or Birth Cert no.). For family rows, only name, relationship (spouse/child), linkedEmployeeEmail, and nric are needed - date of birth can be added via the family section above after import.</div>'+
@@ -1938,6 +1938,10 @@
       showToast('Please complete all fields before adding the employee.', 'error');
       return Promise.resolve();
     }
+    if(effectiveDate < dateOfEmployment){
+      showToast('Effective Date cannot be earlier than Date of Employment.', 'error');
+      return Promise.resolve();
+    }
     var familySectionVisible = document.getElementById('family-section').style.display !== 'none';
     var familyRows = familySectionVisible ? collectFamilyRowsFromDom() : [];
     if(familySectionVisible && familyRows.length===0){
@@ -1971,6 +1975,7 @@
       if(lines.length<2){ showToast('CSV appears to be empty.', 'error'); return; }
       var inviteRows = [];
       var familyRows = [];
+      var skippedDateOrder = 0;
       for(var i=1;i<lines.length;i++){
         var parts = lines[i].split(',').map(function(p){ return p.trim(); });
         if(parts.length<2) continue;
@@ -1991,19 +1996,21 @@
           var paynowMobile = parts[5] && parts[5].length ? parts[5] : null;
           var alloc = parseFloat(parts[6])||1000;
           var empNric = parts[9] && parts[9].length ? parts[9] : null;
+          if(dateOfJoining && effectiveDate && effectiveDate < dateOfJoining){ skippedDateOrder++; continue; }
           inviteRows.push({email:email, name:name, nric:empNric, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent_at:null, invited_by:STATE.session.user.id, used:false});
         }
       }
       if(!inviteRows.length){ showToast('No valid employee rows found in that CSV.', 'error'); return; }
+      var skippedSuffix = skippedDateOrder ? ' ('+skippedDateOrder+' row(s) skipped - Effective Date was before Date of Employment)' : '';
       return supabase.from('invites').upsert(inviteRows, {onConflict:'email'}).then(function(res){
         if(res.error){ showToast('Bulk invite failed: '+res.error.message, 'error'); return; }
         if(familyRows.length){
           return supabase.from('family_members').insert(familyRows).then(function(famRes){
             if(famRes.error){ showToast(inviteRows.length+' employee(s) added, but family rows failed: '+famRes.error.message, 'error'); return; }
-            showToast(inviteRows.length+' employee(s) and '+familyRows.length+' family member(s) added.', 'success');
+            showToast(inviteRows.length+' employee(s) and '+familyRows.length+' family member(s) added.'+skippedSuffix, 'success');
           });
         }
-        showToast(inviteRows.length+' invite(s) created or updated.', 'success');
+        showToast(inviteRows.length+' invite(s) created or updated.'+skippedSuffix, 'success');
       }).then(function(){ return loadAppData(); });
     }).then(function(){ render(); }).catch(function(){ showToast('Could not read that CSV file.', 'error'); });
   }
@@ -2222,6 +2229,16 @@
     if(target.id==='staff-csv-input'){
       var f = target.files[0]; target.value='';
       return handleStaffCsv(f);
+    }
+    if(target.id==='add-emp-date-of-employment'){
+      var effDateInput = document.getElementById('add-emp-effective-date');
+      if(effDateInput){
+        effDateInput.min = target.value || '';
+        if(target.value && effDateInput.value && effDateInput.value < target.value){
+          effDateInput.value = '';
+        }
+      }
+      return Promise.resolve();
     }
     if(target.id==='claim-currency-input' || (target.id && target.id.indexOf('edit-currency-')===0)){
       handleAmountRelatedChange(target);
