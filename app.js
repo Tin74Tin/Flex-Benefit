@@ -44,7 +44,6 @@
     historySearchQuery: '',
     allSubmissionsSearchQuery: '',
     reportSearchQuery: '',
-    familyMembers: [],
     reportSortColumn: null,
     reportSortDirection: 'desc',
     rejectedSearchQuery: '',
@@ -53,7 +52,6 @@
     reportMonth: null, reportYear: null,
     invoiceYear: null,
     editingInvoiceRate: false,
-    editingClientName: false,
     appSettings: {},
     _realtimeSubscribed: false
   };
@@ -163,17 +161,6 @@
 
   function profileById(id){ return STATE.profiles.filter(function(p){ return p.id===id; })[0]; }
   function employeeName(id){ var p = profileById(id); return p ? p.name : 'Unknown'; }
-  function familyMemberById(id){ return STATE.familyMembers.filter(function(f){ return f.id===id; })[0] || null; }
-  function familyMembersForEmail(email){ return STATE.familyMembers.filter(function(f){ return f.employee_email===email; }); }
-  function ageAtDate(dob, atDateStr){
-    if(!dob) return null;
-    var birth = new Date(dob+'T00:00:00');
-    var at = new Date(atDateStr+'T00:00:00');
-    var age = at.getFullYear() - birth.getFullYear();
-    var hadBirthdayYet = (at.getMonth() > birth.getMonth()) || (at.getMonth()===birth.getMonth() && at.getDate() >= birth.getDate());
-    if(!hadBirthdayYet) age--;
-    return age;
-  }
 
   function vendorSuggestions(){
     var seen = {}; var list = [];
@@ -306,11 +293,6 @@
   function getInvoiceRate(){
     var n = parseFloat(STATE.appSettings && STATE.appSettings.invoice_rate_per_head);
     return isNaN(n) ? 88 : n;
-  }
-
-  function getClientCompanyName(){
-    var v = STATE.appSettings && STATE.appSettings.client_company_name;
-    return (v && String(v).trim()) ? String(v).trim() : 'Client';
   }
 
   function buildInvoiceYearOptions(){
@@ -468,8 +450,7 @@
       supabase.from('benefits').select('*').order('name'),
       supabase.from('reject_reasons').select('*').order('reason'),
       supabase.from('claims').select('*').order('submitted_at', {ascending:false}),
-      supabase.from('notifications').select('*').order('created_at', {ascending:false}),
-      supabase.from('family_members').select('*').order('name')
+      supabase.from('notifications').select('*').order('created_at', {ascending:false})
     ];
     if(isAdmin){
       calls.push(supabase.from('profiles').select('*').order('name'));
@@ -481,12 +462,11 @@
       STATE.rejectReasons = (results[1].data||[]).map(function(r){ return r.reason; });
       STATE.claims = results[2].data || [];
       STATE.notifications = results[3].data || [];
-      STATE.familyMembers = results[4].data || [];
       if(isAdmin){
-        STATE.profiles = results[5].data || [];
-        STATE.invites = results[6].data || [];
+        STATE.profiles = results[4].data || [];
+        STATE.invites = results[5].data || [];
         STATE.appSettings = {};
-        (results[7].data||[]).forEach(function(s){ STATE.appSettings[s.key] = s.value; });
+        (results[6].data||[]).forEach(function(s){ STATE.appSettings[s.key] = s.value; });
       } else {
         STATE.profiles = STATE.profile ? [STATE.profile] : [];
         STATE.invites = [];
@@ -523,15 +503,18 @@
 
   function init(){
     if(!supabase){ STATE.loading = false; render(); return; }
+    if(window.location.hash.indexOf('type=recovery') !== -1 || window.location.search.indexOf('type=recovery') !== -1){
+      STATE.authView = 'reset-password';
+    }
     STATE.loading = true; render();
     supabase.auth.getSession().then(function(res){
       STATE.session = res.data.session;
       return STATE.session ? loadProfileAndData() : null;
     }).then(function(){
       STATE.loading = false;
-      if(STATE.profile){ STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard'; }
+      if(STATE.profile && STATE.authView !== 'reset-password'){ STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard'; }
       render();
-      if(STATE.profile){ subscribeRealtime(); }
+      if(STATE.profile && STATE.authView !== 'reset-password'){ subscribeRealtime(); }
     }).catch(function(err){
       console.error(err);
       STATE.session = null; STATE.profile = null; STATE.loading = false;
@@ -541,6 +524,10 @@
     supabase.auth.onAuthStateChange(function(event, session){
       if(event === 'SIGNED_OUT'){
         STATE.session = null; STATE.profile = null; STATE.activeTab = null;
+        render();
+      }
+      if(event === 'PASSWORD_RECOVERY'){
+        STATE.session = session; STATE.authView = 'reset-password'; STATE.authError=''; STATE.authInfo='';
         render();
       }
     });
@@ -553,8 +540,13 @@
     var app = document.getElementById('app');
     if(!supabase){ app.innerHTML = renderSetupNeeded(); return; }
     if(STATE.loading){ app.innerHTML = renderLoading() + renderBrandFooter(); return; }
-    if(!STATE.session || !STATE.profile){ app.innerHTML = renderAuthScreen() + renderBrandFooter(); return; }
-    app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
+    if(STATE.authView === 'reset-password'){
+      app.innerHTML = renderResetPassword() + renderBrandFooter();
+    } else if(!STATE.session || !STATE.profile){
+      app.innerHTML = renderAuthScreen() + renderBrandFooter();
+    } else {
+      app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
+    }
     if(STATE.modal){
       var host = document.createElement('div');
       host.innerHTML = renderModal();
@@ -598,6 +590,17 @@
   function renderModal(){
     if(!STATE.modal) return '';
     var m = STATE.modal;
+    if(m.message){
+      return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
+        '<div class="modal-box">'+
+          '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
+          '<div class="modal-body">'+
+            '<p style="margin:0 0 16px;">'+escapeHtml(m.message)+'</p>'+
+            '<button class="btn btn-primary" data-action="close-modal">OK</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    }
     return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
       '<div class="modal-box">'+
         '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
@@ -629,6 +632,18 @@
         '<button data-action="show-signup">New User Login</button>'+
         '<button data-action="forgot-password">Forgot password?</button>'+
       '</div>'+
+    '</div></div>';
+  }
+
+  function renderResetPassword(){
+    return '<div class="login-wrap"><div class="login-card">'+
+      '<div class="login-brand"><div class="login-logo">FB</div><h1>Set New Password</h1><p class="muted">Choose a new password for your account</p></div>'+
+      '<form data-form="reset-password" class="login-form">'+
+        '<label>New Password<input type="password" name="password" autocomplete="new-password" required placeholder="********" /></label>'+
+        '<label>Confirm Password<input type="password" name="confirmPassword" autocomplete="new-password" required placeholder="********" /></label>'+
+        (STATE.authError ? '<div class="field-error">'+escapeHtml(STATE.authError)+'</div>' : '')+
+        '<button type="submit" class="btn btn-primary btn-block">Set new password</button>'+
+      '</form>'+
     '</div></div>';
   }
 
@@ -717,14 +732,9 @@
 
   function renderClaimForm(){
     var wallet = computeWallet(STATE.profile.id);
-    var myFamily = familyMembersForEmail(STATE.profile.email);
     return '<div class="card">'+cardTitleWithClose('Submit a New Claim')+
       '<div class="info-banner banner-warning">'+escapeHtml(claimCutoffNotice())+'</div>'+
       '<form data-form="submit-claim" class="claim-form">'+
-        (myFamily.length ? '<label>Claiming For<select name="familyMemberId">'+
-          '<option value="">Myself</option>'+
-          myFamily.map(function(f){ return '<option value="'+f.id+'">'+escapeHtml(f.name)+' ('+(f.relationship==='spouse'?'Spouse':'Child')+')</option>'; }).join('')+
-        '</select></label>' : '')+
         '<label>Benefit Category<select name="category" required><option value="">Select a category...</option>'+
           STATE.benefits.map(function(b){ return '<option value="'+escapeHtml(b)+'">'+escapeHtml(b)+'</option>'; }).join('')+
         '</select></label>'+
@@ -786,10 +796,9 @@
     if(!claims.length) return '<div class="empty-state">No submissions found.</div>';
     var colCount = 8 + (showEmployee?1:0) + (adminActions?1:0) + (userActions?1:0);
     var rows = claims.map(function(c){
-      var famMember = c.family_member_id ? familyMemberById(c.family_member_id) : null;
       var row = '<tr>'+
         (showEmployee ? '<td>'+escapeHtml(employeeName(c.employee_id))+'</td>' : '')+
-        '<td>'+escapeHtml(c.category)+(famMember ? '<div class="tiny muted">for '+escapeHtml(famMember.name)+' ('+(famMember.relationship==='spouse'?'Spouse':'Child')+')</div>' : '')+'</td>'+
+        '<td>'+escapeHtml(c.category)+'</td>'+
         '<td>'+escapeHtml(c.vendor||'-')+'</td>'+
         '<td>'+fmtCurrencyAmount(c.currency, c.amount)+((c.currency && c.currency!=='SGD') ? '<div class="tiny muted">\u2248 '+fmtMoney(sgdAmountOf(c))+' SGD</div>' : '')+'</td>'+
         '<td>'+fmtDate(c.receipt_date)+'</td>'+
@@ -941,17 +950,12 @@
           '<button class="btn btn-sm btn-danger" data-action="delete-profile" data-id="'+p.id+'">Delete</button>';
       }
       var roleLabel = p.role==='admin' ? 'Admin' : 'User';
-      var famList = familyMembersForEmail(p.email);
-      var familyCell = famList.length
-        ? famList.map(function(f){ return escapeHtml(f.name)+' ('+(f.relationship==='spouse'?'Spouse':'Child')+')'; }).join(', ')
-        : '-';
       return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+escapeHtml(p.email)+'</td>'+
         '<td><span class="role-chip">'+roleLabel+'</span></td>'+
         '<td>'+allocCell+'</td>'+
         '<td>'+fmtDate(p.date_of_joining)+'</td>'+
         '<td>'+(p.effective_date ? fmtDate(p.effective_date) : '-')+'</td>'+
         '<td>'+terminationCell+'</td>'+
-        '<td class="tiny">'+familyCell+'</td>'+
         '<td><span class="status-pill '+(p.active?'status-approved':'status-rejected')+'">'+(p.active?'Active':'Inactive')+'</span></td>'+
         '<td class="actions-cell">'+actionsCell+'</td></tr>';
     }).join('');
@@ -978,29 +982,19 @@
 
     return ''+
     '<div class="card"><div class="card-title">Add Employee</div>'+
-      '<div class="filter-row" id="add-employee-mode-row" style="margin-bottom:14px;">'+
-        '<button type="button" class="chip-filter active" data-action="add-employee-mode" data-mode="solo">Employee Only</button>'+
-        '<button type="button" class="chip-filter" data-action="add-employee-mode" data-mode="family">Employee and Family</button>'+
-      '</div>'+
       '<form data-form="invite-staff" class="inline-form">'+
         '<label class="mini-field">Full Name<input type="text" name="name" placeholder="e.g. Jane Lim" required /></label>'+
-        '<label class="mini-field">NRIC<input type="text" name="nric" placeholder="e.g. S1234567A" style="width:150px" required /></label>'+
         '<label class="mini-field">Work Email<input type="email" name="email" placeholder="jane@company.com" required /></label>'+
-        '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" id="add-emp-date-of-employment" style="width:160px" required /></label>'+
-        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" id="add-emp-effective-date" style="width:160px" required /></label>'+
+        '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" required /></label>'+
+        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" style="width:160px" required /></label>'+
         '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" required /></label>'+
         '<label class="mini-field">Entitlement (SGD)<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" required /></label>'+
-        '<div id="family-section" style="display:none;width:100%;border-top:1px solid var(--border);margin-top:14px;padding-top:14px;">'+
-          '<div class="field-hint" style="margin-bottom:10px;">Family members are listed for claim eligibility only - they do not get their own login, and their claims count against this employee\'s own entitlement above. Children stop being eligible to claim once they turn 21.</div>'+
-          '<div id="family-rows"></div>'+
-          '<button type="button" class="btn btn-ghost btn-sm" data-action="add-family-row">+ Add Family Member</button>'+
-        '</div>'+
         '<button type="submit" class="btn btn-primary">Add Employee</button>'+
       '</form>'+
-      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. A welcome email with sign-up instructions is sent automatically once the Effective Date arrives. Effective Date cannot be earlier than Date of Employment.</div>'+
+      '<div class="field-hint">New employees are invited as Users. To grant Admin access, use the User Access tab after they\'ve signed up. A welcome email with sign-up instructions is sent automatically once the Effective Date arrives.</div>'+
     '</div>'+
     '<div class="card"><div class="card-title">Bulk Invite (CSV)</div>'+
-      '<div class="muted small" style="margin-bottom:10px;">Columns: type,name,email,dateOfEmployment,effectiveDate,paynowMobile,entitlement,relationship,linkedEmployeeEmail,nric. First row is treated as a header and skipped. type is "employee" or "family". nric applies to both row types (this person\'s own NRIC or Birth Cert no.). For family rows, only name, relationship (spouse/child), linkedEmployeeEmail, and nric are needed - date of birth can be added via the family section above after import.</div>'+
+      '<div class="muted small" style="margin-bottom:10px;">Columns: name,email,annualAllocation,dateOfEmployment,paynowMobile,effectiveDate. First row is treated as a header and skipped. The last three columns are optional.</div>'+
       '<div class="dropzone" id="staff-csv-dropzone">'+
         '<input type="file" id="staff-csv-input" accept=".csv" />'+
         '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
@@ -1012,7 +1006,7 @@
     '<div class="card"><div class="card-title">Employee Directory</div>'+
       '<div class="filter-row">'+staffFilters.map(function(f){ return '<button class="chip-filter '+(roleFilter===f.key?'active':'')+'" data-action="filter-staff" data-filter="'+f.key+'">'+f.label+'</button>'; }).join('')+'</div>'+
       '<div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Date of Employment</th><th>Effective Date</th><th>Date of Termination</th><th>Family</th><th>Status</th><th>Actions</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Annual Allocation</th><th>Date of Employment</th><th>Effective Date</th><th>Date of Termination</th><th>Status</th><th>Actions</th></tr></thead>'+
       '<tbody>'+staffRows+'</tbody></table></div>'+
       '<div class="field-hint">Deleting an employee removes their account, all their claim history, and their notifications - permanently, and this cannot be undone. Their login itself still technically exists in Supabase until removed from the dashboard\'s Authentication &gt; Users page too, but they won\'t be able to do anything with it here once deleted.</div>'+
     '</div>';
@@ -1042,6 +1036,18 @@
       '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Date Added</th><th>Date of Deactivation</th><th>Status</th></tr></thead>'+
       '<tbody>'+rows+'</tbody></table></div>'+
       '<div class="field-hint">Password resets are self-service - employees use "Forgot password?" on the login screen.</div></div>';
+  }
+
+  function sortArrow(col, activeCol, dir){
+    if(col!==activeCol) return '';
+    return dir==='asc' ? ' &uarr;' : ' &darr;';
+  }
+  function sortRows(rows, column, direction, getters){
+    if(!column || !getters[column]) return rows;
+    var getter = getters[column];
+    var sorted = rows.slice().sort(function(a,b){ return getter(a)-getter(b); });
+    if(direction==='desc') sorted.reverse();
+    return sorted;
   }
 
   function renderAdminFinance(){
@@ -1114,18 +1120,6 @@
     '</div>';
   }
 
-  function sortArrow(col, activeCol, dir){
-    if(col!==activeCol) return '';
-    return dir==='asc' ? ' &uarr;' : ' &darr;';
-  }
-  function sortRows(rows, column, direction, getters){
-    if(!column || !getters[column]) return rows;
-    var getter = getters[column];
-    var sorted = rows.slice().sort(function(a,b){ return getter(a)-getter(b); });
-    if(direction==='desc') sorted.reverse();
-    return sorted;
-  }
-
   function renderAdminReports(){
     var now = new Date();
     var currentYearValue = (STATE.reportYear!=null) ? String(STATE.reportYear) : String(now.getFullYear());
@@ -1186,10 +1180,6 @@
       return '<tr><td>'+escapeHtml(r.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td class="tiny">'+r.reasonBreakdown+'</td></tr>';
     }).join('');
 
-    var clientNameCell = STATE.editingClientName
-      ? '<input type="text" maxlength="120" style="width:180px" id="client-name-input" value="'+escapeHtml(getClientCompanyName())+'"/> <button class="btn btn-sm btn-primary" data-action="save-client-name">Save</button>'
-      : '<span class="muted">Prepared for: '+escapeHtml(getClientCompanyName())+'</span> <button class="link-btn" data-action="edit-client-name">Edit</button>';
-
     return ''+
     '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
       '<div class="report-controls">'+
@@ -1198,7 +1188,6 @@
         '<button class="btn btn-ghost btn-sm" data-action="export-report">Export to Excel</button>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report-pdf">Export to PDF for HR</button>'+
       '</div>'+
-      '<div class="field-hint" style="margin:10px 0;">'+clientNameCell+'</div>'+
       '<div class="report-summary">'+escapeHtml(period.label)+' - Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s). '+
         '<strong>'+report.totalRejectedCount+'</strong> submission(s) rejected, totaling <strong>'+fmtMoney(report.totalRejectedAmount)+'</strong>.</div>'+
     '</div>'+
@@ -1337,7 +1326,7 @@
       doc.setFontSize(11);
       doc.text('Monthly Utilisation Report - '+periodLabel, margin, 27);
       doc.setFontSize(9);
-      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for '+getClientCompanyName(), margin, 34);
+      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for HR', margin, 34);
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
@@ -1614,6 +1603,26 @@
     });
   }
 
+  function doResetPassword(form){
+    var password = form.password.value;
+    var confirmPassword = form.confirmPassword.value;
+    if(password !== confirmPassword){ STATE.authError='Passwords do not match.'; render(); return Promise.resolve(); }
+    if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
+    STATE.authError='';
+    var btn = form.querySelector('button[type=submit]');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    return supabase.auth.updateUser({password:password}).then(function(res){
+      if(res.error){ STATE.authError = res.error.message; render(); return; }
+      return supabase.auth.signOut().then(function(){
+        STATE.session=null; STATE.profile=null; STATE.authView='login'; STATE.authError='';
+        STATE.authInfo='Password updated! Please log in with your new password.';
+        render();
+      });
+    }).catch(function(err){
+      STATE.authError = (err && err.message) || String(err); render();
+    });
+  }
+
   function doSignup(form){
     var email = form.email.value.trim();
     var password = form.password.value;
@@ -1668,7 +1677,8 @@
     var redirectTo = window.location.origin + window.location.pathname;
     return withTimeout(supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}), 8000, 'Password reset request').then(function(res){
       if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
-      showToast('Password reset email sent - check your inbox.', 'success');
+      STATE.modal = {title:'Check your email', message:'We\'ve sent a password reset link to '+email+'. Check your inbox (and spam folder) for an email from noreply@cresco.sg.'};
+      render();
     }).catch(function(err){
       showToast('Could not send reset email: '+((err && err.message) || err), 'error');
     }).then(function(){
@@ -1705,7 +1715,6 @@
     var amount = parseFloat(form.amount.value);
     var receiptDate = form.receiptDate.value;
     var file = form.receipt.files[0];
-    var familyMemberId = form.familyMemberId ? form.familyMemberId.value : '';
     if(!category || !vendor || !amount || amount<=0 || !receiptDate || !file){ showToast('Please complete all fields.', 'error'); return Promise.resolve(); }
     if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return Promise.resolve(); }
 
@@ -1715,18 +1724,6 @@
       STATE.claimFormError = 'This receipt is dated '+fmtDate(receiptDate)+', which is not from '+currentYear+'. Only '+currentYear+' receipts can be claimed - your benefits reset every 1 January.';
       render();
       return Promise.resolve();
-    }
-
-    if(familyMemberId){
-      var fam = familyMemberById(familyMemberId);
-      if(fam && fam.relationship==='child' && fam.date_of_birth){
-        var age = ageAtDate(fam.date_of_birth, receiptDate);
-        if(age!==null && age>=21){
-          STATE.claimFormError = fam.name+' turned 21 before this receipt date and is no longer eligible for claims.';
-          render();
-          return Promise.resolve();
-        }
-      }
     }
 
     var btn = form.querySelector('button[type=submit]');
@@ -1746,8 +1743,7 @@
         return supabase.from('claims').insert({
           employee_id: STATE.session.user.id, category:category, vendor:vendor,
           amount:amount, currency:currency, amount_sgd:amountSgd, exchange_rate:rate,
-          receipt_date:receiptDate, receipt_path:receipt.path, receipt_name:receipt.name, status:'pending',
-          family_member_id: familyMemberId || null
+          receipt_date:receiptDate, receipt_path:receipt.path, receipt_name:receipt.name, status:'pending'
         });
       });
     }).then(function(res){
@@ -1881,91 +1877,27 @@
   /* =========================================================
      ACTION HANDLERS - ADMIN: STAFF / INVITES / BENEFITS / ACCESS
   ========================================================== */
-  var familyRowCounter = 0;
-  function makeFamilyRow(){
-    familyRowCounter++;
-    var container = document.getElementById('family-rows');
-    if(!container) return;
-    var row = document.createElement('div');
-    row.className = 'family-row';
-    row.innerHTML =
-      '<input type="text" class="family-name" placeholder="Family member name" style="width:180px" />'+
-      '<select class="family-relationship" style="width:110px"><option value="spouse">Spouse</option><option value="child">Child</option></select>'+
-      '<input type="date" class="family-dob" title="Date of birth" style="width:150px" />'+
-      '<input type="text" class="family-nric" placeholder="NRIC / Birth Cert no." style="width:170px" />'+
-      '<button type="button" class="btn btn-ghost btn-sm" data-remove-family-row="1">Remove</button>';
-    row.querySelector('[data-remove-family-row]').addEventListener('click', function(){ row.remove(); });
-    container.appendChild(row);
-  }
-  function setAddEmployeeMode(mode){
-    var section = document.getElementById('family-section');
-    var row = document.getElementById('add-employee-mode-row');
-    if(!section || !row) return;
-    row.querySelectorAll('[data-action="add-employee-mode"]').forEach(function(btn){
-      btn.classList.toggle('active', btn.dataset.mode===mode);
-    });
-    section.style.display = (mode==='family') ? 'block' : 'none';
-    if(mode==='family' && document.getElementById('family-rows').children.length===0){
-      makeFamilyRow();
-    }
-  }
-
-  function collectFamilyRowsFromDom(){
-    var rows = [];
-    var rowEls = document.querySelectorAll('#family-rows .family-row');
-    for(var i=0;i<rowEls.length;i++){
-      var el = rowEls[i];
-      var name = el.querySelector('.family-name').value.trim();
-      var relationship = el.querySelector('.family-relationship').value;
-      var dob = el.querySelector('.family-dob').value || null;
-      var nric = el.querySelector('.family-nric').value.trim() || null;
-      if(!name) continue;
-      rows.push({name:name, relationship:relationship, date_of_birth:dob, nric:nric});
-    }
-    return rows;
-  }
-
   function inviteStaff(form){
     var name = form.name.value.trim();
-    var nric = form.nric.value.trim();
     var email = form.email.value.trim().toLowerCase();
     var dateOfEmployment = form.dateOfEmployment.value;
     var effectiveDate = form.effectiveDate.value;
     var paynowMobile = form.paynowMobile.value.trim();
     var allocRaw = form.annualAllocation.value;
     var alloc = parseFloat(allocRaw);
-    if(!name || !nric || !email || !dateOfEmployment || !effectiveDate || !paynowMobile || allocRaw==='' || isNaN(alloc)){
+    if(!name || !email || !dateOfEmployment || !effectiveDate || !paynowMobile || allocRaw==='' || isNaN(alloc)){
       showToast('Please complete all fields before adding the employee.', 'error');
       return Promise.resolve();
     }
-    if(effectiveDate < dateOfEmployment){
-      showToast('Effective Date cannot be earlier than Date of Employment.', 'error');
-      return Promise.resolve();
-    }
-    var familySectionVisible = document.getElementById('family-section').style.display !== 'none';
-    var familyRows = familySectionVisible ? collectFamilyRowsFromDom() : [];
-    if(familySectionVisible && familyRows.length===0){
-      showToast('Add at least one family member, or switch back to "Employee Only".', 'error');
-      return Promise.resolve();
-    }
     return supabase.from('invites').upsert(
-      {email:email, name:name, nric:nric, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent_at:null, invited_by:STATE.session.user.id, used:false},
+      {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false},
       {onConflict:'email'}
     ).then(function(res){
-      if(res.error){ showToast('Could not add employee: '+res.error.message, 'error'); return Promise.reject(res.error); }
-      if(familyRows.length){
-        var familyPayload = familyRows.map(function(f){ return {employee_email:email, name:f.name, relationship:f.relationship, date_of_birth:f.date_of_birth, nric:f.nric}; });
-        return supabase.from('family_members').insert(familyPayload).then(function(famRes){
-          if(famRes.error){ showToast('Employee added, but family members could not be saved: '+famRes.error.message, 'error'); return; }
-        });
-      }
-    }).then(function(){
-      showToast('Invite created for '+email+(familyRows.length?' with '+familyRows.length+' family member(s).':'.'), 'success');
+      if(res.error){ showToast('Could not add employee: '+res.error.message, 'error'); return; }
+      showToast('Invite created for '+email+'.', 'success');
       form.reset();
-      document.getElementById('family-rows').innerHTML = '';
-      setAddEmployeeMode('solo');
       return loadAppData();
-    }).then(function(){ render(); }).catch(function(){ /* error already shown */ });
+    }).then(function(){ render(); });
   }
 
   function handleStaffCsv(file){
@@ -1973,45 +1905,23 @@
     return file.text().then(function(text){
       var lines = text.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
       if(lines.length<2){ showToast('CSV appears to be empty.', 'error'); return; }
-      var inviteRows = [];
-      var familyRows = [];
-      var skippedDateOrder = 0;
+      var rows = [];
       for(var i=1;i<lines.length;i++){
         var parts = lines[i].split(',').map(function(p){ return p.trim(); });
         if(parts.length<2) continue;
-        var type = (parts[0]||'employee').toLowerCase();
-        var name = parts[1];
-        if(!name) continue;
-        if(type==='family'){
-          var relationship = (parts[7]||'').toLowerCase();
-          var linkedEmail = (parts[8]||'').toLowerCase();
-          var nric = parts[9] && parts[9].length ? parts[9] : null;
-          if(!linkedEmail || (relationship!=='spouse' && relationship!=='child')) continue;
-          familyRows.push({employee_email:linkedEmail, name:name, relationship:relationship, date_of_birth:null, nric:nric});
-        } else {
-          var email=(parts[2]||'').toLowerCase();
-          if(!email) continue;
-          var dateOfJoining = parts[3] && parts[3].length ? parts[3] : null;
-          var effectiveDate = parts[4] && parts[4].length ? parts[4] : null;
-          var paynowMobile = parts[5] && parts[5].length ? parts[5] : null;
-          var alloc = parseFloat(parts[6])||1000;
-          var empNric = parts[9] && parts[9].length ? parts[9] : null;
-          if(dateOfJoining && effectiveDate && effectiveDate < dateOfJoining){ skippedDateOrder++; continue; }
-          inviteRows.push({email:email, name:name, nric:empNric, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent_at:null, invited_by:STATE.session.user.id, used:false});
-        }
+        var name=parts[0], email=(parts[1]||'').toLowerCase(), alloc=parseFloat(parts[2])||1000;
+        var dateOfJoining = parts[3] && parts[3].length ? parts[3] : null;
+        var paynowMobile = parts[4] && parts[4].length ? parts[4] : null;
+        var effectiveDate = parts[5] && parts[5].length ? parts[5] : null;
+        if(!name || !email) continue;
+        rows.push({email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfJoining, paynow_mobile:paynowMobile, effective_date:effectiveDate, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false});
       }
-      if(!inviteRows.length){ showToast('No valid employee rows found in that CSV.', 'error'); return; }
-      var skippedSuffix = skippedDateOrder ? ' ('+skippedDateOrder+' row(s) skipped - Effective Date was before Date of Employment)' : '';
-      return supabase.from('invites').upsert(inviteRows, {onConflict:'email'}).then(function(res){
+      if(!rows.length){ showToast('No valid rows found in that CSV.', 'error'); return; }
+      return supabase.from('invites').upsert(rows, {onConflict:'email'}).then(function(res){
         if(res.error){ showToast('Bulk invite failed: '+res.error.message, 'error'); return; }
-        if(familyRows.length){
-          return supabase.from('family_members').insert(familyRows).then(function(famRes){
-            if(famRes.error){ showToast(inviteRows.length+' employee(s) added, but family rows failed: '+famRes.error.message, 'error'); return; }
-            showToast(inviteRows.length+' employee(s) and '+familyRows.length+' family member(s) added.'+skippedSuffix, 'success');
-          });
-        }
-        showToast(inviteRows.length+' invite(s) created or updated.'+skippedSuffix, 'success');
-      }).then(function(){ return loadAppData(); });
+        showToast(rows.length+' invite(s) created or updated.', 'success');
+        return loadAppData();
+      });
     }).then(function(){ render(); }).catch(function(){ showToast('Could not read that CSV file.', 'error'); });
   }
 
@@ -2103,18 +2013,6 @@
     }).then(function(){ render(); });
   }
 
-  function saveClientName(){
-    var input = document.getElementById('client-name-input');
-    var val = input ? input.value.trim() : '';
-    if(!val){ showToast('Please enter a company name.', 'error'); return Promise.resolve(); }
-    STATE.editingClientName = false;
-    return supabase.from('app_settings').upsert({key:'client_company_name', value:val}, {onConflict:'key'}).then(function(res){
-      if(res.error){ showToast('Could not update company name: '+res.error.message, 'error'); return; }
-      showToast('Report company name updated.', 'success');
-      return loadAppData();
-    }).then(function(){ render(); });
-  }
-
   function addBenefit(form){
     var cat = form.category.value.trim();
     if(!cat) return Promise.resolve();
@@ -2193,13 +2091,9 @@
       case 'export-report-pdf': exportReportPDF(); return Promise.resolve();
       case 'edit-invoice-rate': STATE.editingInvoiceRate=true; render(); return Promise.resolve();
       case 'save-invoice-rate': return saveInvoiceRate();
-      case 'edit-client-name': STATE.editingClientName=true; render(); return Promise.resolve();
-      case 'save-client-name': return saveClientName();
       case 'export-invoice-pdf': exportInvoicePDF(); return Promise.resolve();
       case 'filter-history': STATE.historyFilter=btn.dataset.filter; render(); return Promise.resolve();
       case 'filter-staff': STATE.staffRoleFilter=btn.dataset.filter; render(); return Promise.resolve();
-      case 'add-employee-mode': setAddEmployeeMode(btn.dataset.mode); return Promise.resolve();
-      case 'add-family-row': makeFamilyRow(); return Promise.resolve();
       default: return Promise.resolve();
     }
   }
@@ -2211,6 +2105,7 @@
     var type = form.dataset.form;
     if(type==='login') return doLogin(form);
     if(type==='signup') return doSignup(form);
+    if(type==='reset-password') return doResetPassword(form);
     if(type==='submit-claim') return submitClaim(form);
     if(type==='invite-staff') return inviteStaff(form);
     if(type==='add-benefit') return addBenefit(form);
@@ -2229,16 +2124,6 @@
     if(target.id==='staff-csv-input'){
       var f = target.files[0]; target.value='';
       return handleStaffCsv(f);
-    }
-    if(target.id==='add-emp-date-of-employment'){
-      var effDateInput = document.getElementById('add-emp-effective-date');
-      if(effDateInput){
-        effDateInput.min = target.value || '';
-        if(target.value && effDateInput.value && effDateInput.value < target.value){
-          effDateInput.value = '';
-        }
-      }
-      return Promise.resolve();
     }
     if(target.id==='claim-currency-input' || (target.id && target.id.indexOf('edit-currency-')===0)){
       handleAmountRelatedChange(target);
