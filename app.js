@@ -514,7 +514,7 @@
       STATE.loading = false;
       if(STATE.profile && STATE.authView !== 'reset-password'){ STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard'; }
       render();
-      if(STATE.profile && STATE.authView !== 'reset-password'){ subscribeRealtime(); }
+      if(STATE.profile && STATE.authView !== 'reset-password'){ subscribeRealtime(); resetInactivityTimer(); }
     }).catch(function(err){
       console.error(err);
       STATE.session = null; STATE.profile = null; STATE.loading = false;
@@ -524,6 +524,7 @@
     supabase.auth.onAuthStateChange(function(event, session){
       if(event === 'SIGNED_OUT'){
         STATE.session = null; STATE.profile = null; STATE.activeTab = null;
+        if(inactivityTimer){ clearTimeout(inactivityTimer); inactivityTimer = null; }
         render();
       }
       if(event === 'PASSWORD_RECOVERY'){
@@ -1596,6 +1597,7 @@
         STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard';
         render();
         subscribeRealtime();
+        resetInactivityTimer();
       }).catch(function(err){
         STATE.loading=false; STATE.session=null; STATE.profile=null;
         if(err.message!=='deactivated'){ STATE.authError = err.message; }
@@ -1661,6 +1663,7 @@
           STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard';
           render();
           subscribeRealtime();
+          resetInactivityTimer();
         });
       }
       STATE.authView='login'; STATE.authError='';
@@ -2272,8 +2275,37 @@
     }
   });
 
+  /* =========================================================
+     AUTO-LOGOUT ON INACTIVITY
+     Protects against shared/company devices where a user forgot
+     to log out - signs out automatically after a period of no
+     interaction, rather than leaving the session open indefinitely.
+  ========================================================== */
+  var INACTIVITY_LIMIT_MS = 15 * 60 * 1000; // 15 minutes
+  var inactivityTimer = null;
+
+  function resetInactivityTimer(){
+    if(!(STATE.session && STATE.profile)) return;
+    if(inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(function(){
+      if(STATE.session && STATE.profile){
+        supabase.auth.signOut().then(function(){
+          STATE.authInfo = 'You were logged out due to inactivity. Please log in again.';
+          render();
+        });
+      }
+    }, INACTIVITY_LIMIT_MS);
+  }
+
+  function setupInactivityTracking(){
+    ['mousemove','mousedown','keydown','scroll','touchstart','click'].forEach(function(evt){
+      document.addEventListener(evt, resetInactivityTimer, {passive:true});
+    });
+  }
+
   window.addEventListener('dragover', function(e){ e.preventDefault(); });
   window.addEventListener('drop', function(e){ e.preventDefault(); });
 
+  setupInactivityTracking();
   init();
 })();
