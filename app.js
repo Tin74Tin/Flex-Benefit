@@ -1586,6 +1586,7 @@
     var password = form.password.value;
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Logging in...';
+    STATE.authInfo = '';
     return supabase.auth.signInWithPassword({email:email, password:password}).then(function(res){
       if(res.error){ STATE.authError = res.error.message; render(); return; }
       STATE.authError=''; STATE.authInfo=''; STATE.session = res.data.session;
@@ -1609,6 +1610,7 @@
     if(password !== confirmPassword){ STATE.authError='Passwords do not match.'; render(); return Promise.resolve(); }
     if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
     STATE.authError='';
+    STATE.authInfo='';
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Saving...';
     return supabase.auth.updateUser({password:password}).then(function(res){
@@ -1631,6 +1633,7 @@
     if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Creating account...';
+    STATE.authInfo = '';
     var redirectTo = window.location.origin + window.location.pathname;
     return supabase.auth.signUp({email:email, password:password, options:{emailRedirectTo:redirectTo}}).then(function(res){
       if(res.error){
@@ -1670,7 +1673,7 @@
     var emailInput = document.querySelector('form[data-form="login"] input[name="email"]');
     var email = emailInput ? emailInput.value.trim() : '';
     if(!email){ showToast('Enter your email above first, then click "Forgot password?".', 'error'); return Promise.resolve(); }
-    STATE.authError = ''; render();
+    STATE.authError = ''; STATE.authInfo = ''; render();
     var btn = document.querySelector('[data-action="forgot-password"]');
     var originalLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
