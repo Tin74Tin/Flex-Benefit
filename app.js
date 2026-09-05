@@ -301,6 +301,46 @@
     return (v && String(v).trim()) ? String(v).trim() : 'Client';
   }
 
+  function getSelectedInvoiceYear(){
+    var now = new Date();
+    return (STATE.invoiceYear!=null) ? STATE.invoiceYear : (now.getFullYear()-1);
+  }
+
+  function getClientCode(){
+    var name = getClientCompanyName();
+    var firstWord = name.trim().split(/\s+/)[0] || 'CLIENT';
+    var code = firstWord.toUpperCase().replace(/[^A-Z0-9]/g,'');
+    return code || 'CLIENT';
+  }
+
+  function padInvoiceSeq(n){
+    var s = String(n);
+    while(s.length<4){ s = '0'+s; }
+    return s;
+  }
+
+  // Returns the invoice number for a given benefit year, assigning and
+  // persisting a new one (from a per-client running counter) the first time
+  // that year's invoice is exported. Re-exporting the same year always
+  // returns the same stored number rather than incrementing again.
+  function ensureInvoiceNumber(year){
+    var key = 'invoice_number_'+year;
+    var existing = STATE.appSettings && STATE.appSettings[key];
+    if(existing){ return Promise.resolve(existing); }
+    var nextSeq = parseInt(STATE.appSettings && STATE.appSettings.invoice_sequence_next, 10);
+    if(isNaN(nextSeq) || nextSeq<1){ nextSeq = 1; }
+    var formatted = 'INV-'+getClientCode()+'-'+padInvoiceSeq(nextSeq);
+    return supabase.from('app_settings').upsert([
+      {key:key, value:formatted},
+      {key:'invoice_sequence_next', value:String(nextSeq+1)}
+    ], {onConflict:'key'}).then(function(res){
+      if(res.error){ showToast('Could not assign invoice number: '+res.error.message, 'error'); throw res.error; }
+      STATE.appSettings[key] = formatted;
+      STATE.appSettings.invoice_sequence_next = String(nextSeq+1);
+      return formatted;
+    });
+  }
+
   function buildInvoiceYearOptions(){
     var now = new Date();
     var years = {};
@@ -359,10 +399,27 @@
 
     var creditNoteAmount = totalUnutilized + headcountCredit;
     var netAmount = additionalCharge - creditNoteAmount;
+
+    // Base Headcount Charge: the invoice also needs to bill for the upcoming
+    // year's headcount as at 1 Jan (the year the invoice is dated), on top of
+    // the true-up adjustment for the year just closed.
+    var newYearStr = (year+1)+'-01-01';
+    var newYearHeadcount = headcountAt(newYearStr);
+    var baseHeadcountCharge = newYearHeadcount * rate;
+    var totalHeadcountCharge = baseHeadcountCharge + adjustmentAmount;
+
     // Invoice Payable Amount: what the company is actually billed for the
     // upcoming year's benefit funding, net of the headcount adjustment and
-    // any credit note carried in from this year.
-    var invoicePayableAmount = totalEntitlementPool + adjustmentAmount - creditNoteAmount;
+    // any credit note carried in from this year. Subtract totalUnutilized
+    // (not the full creditNoteAmount) here - a headcount *decrease* credit
+    // is already folded into totalHeadcountCharge via the signed
+    // adjustmentAmount, so subtracting creditNoteAmount too would apply
+    // that same credit twice.
+    var invoicePayableAmount = totalEntitlementPool + totalHeadcountCharge - totalUnutilized;
+
+    var newYearHeadcountList = STATE.profiles.filter(function(p){ return employedAt(p, newYearStr); })
+      .map(function(p){ return {name:p.name, allocation:Number(p.annual_allocation)||0}; })
+      .sort(function(a,b){ return a.name.localeCompare(b.name); });
 
     // Supporting lists so the headcount adjustment can be audited: who counted
     // as headcount at the start of the year, and who joined or was terminated
@@ -377,11 +434,12 @@
     var terminatedDuringYear = STATE.profiles.filter(function(p){
       return p.role==='user' && p.date_of_termination && p.date_of_termination>=startStr && p.date_of_termination<=endStr;
     });
-    var membershipChanges = joinedDuringYear.map(function(p){
-      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Joined', date:p.effective_date};
-    }).concat(terminatedDuringYear.map(function(p){
-      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Terminated', date:p.date_of_termination};
-    })).sort(function(a,b){ return a.name.localeCompare(b.name); });
+    var newJoinersList = joinedDuringYear.map(function(p){
+      return {name:p.name, allocation:Number(p.annual_allocation)||0, date:p.effective_date};
+    }).sort(function(a,b){ return a.date.localeCompare(b.date); });
+    var terminationsList = terminatedDuringYear.map(function(p){
+      return {name:p.name, allocation:Number(p.annual_allocation)||0, date:p.date_of_termination};
+    }).sort(function(a,b){ return a.date.localeCompare(b.date); });
 
     return {
       year:year, rate:rate, startHeadcount:startHeadcount, endHeadcount:endHeadcount,
@@ -390,7 +448,9 @@
       totalEntitlementPool:totalEntitlementPool, totalApprovedForYear:totalApprovedForYear,
       totalUnutilized:totalUnutilized, unutilizedByEmployee:unutilizedByEmployee,
       creditNoteAmount:creditNoteAmount, netAmount:netAmount, invoicePayableAmount:invoicePayableAmount,
-      startHeadcountList:startHeadcountList, membershipChanges:membershipChanges
+      newYearHeadcount:newYearHeadcount, baseHeadcountCharge:baseHeadcountCharge, totalHeadcountCharge:totalHeadcountCharge,
+      newYearHeadcountList:newYearHeadcountList,
+      startHeadcountList:startHeadcountList, newJoinersList:newJoinersList, terminationsList:terminationsList
     };
   }
 
@@ -1022,11 +1082,12 @@
   }
 
   function renderAdminFinance(){
-    var now = new Date();
-    var year = (STATE.invoiceYear!=null) ? STATE.invoiceYear : (now.getFullYear()-1);
+    var year = getSelectedInvoiceYear();
     var yearOptions = buildInvoiceYearOptions();
     var inv = computeAnnualInvoice(year);
     var invoiceDate = '2 Jan '+(year+1);
+    var invoiceNumber = STATE.appSettings && STATE.appSettings['invoice_number_'+year];
+    var invoiceNoLabel = invoiceNumber ? ('Invoice No: '+escapeHtml(invoiceNumber)) : 'Invoice No: assigned on export';
 
     var rateCell = STATE.editingInvoiceRate
       ? '<input type="number" min="0" step="0.01" style="width:100px" id="invoice-rate-input" value="'+inv.rate+'"/> <button class="btn btn-sm btn-primary" data-action="save-invoice-rate">Save</button>'
@@ -1045,9 +1106,9 @@
           '<button class="btn btn-ghost btn-sm" data-action="export-invoice-pdf">Export to PDF</button>'+
         '</div>'+
       '</div>'+
-      '<div class="report-summary" style="margin-bottom:16px;">Period: 1 Jan '+year+' - 31 Dec '+year+' &middot; Invoice date '+invoiceDate+' &middot; '+rateCell+'</div>'+
+      '<div class="report-summary" style="margin-bottom:16px;">Period: 1 Jan '+year+' - 31 Dec '+year+' &middot; Invoice date '+invoiceDate+' &middot; '+invoiceNoLabel+' &middot; '+rateCell+'</div>'+
       '<div class="grid-cards">'+
-        '<div class="card stat"><div class="stat-label">Headcount Adjustment</div><div class="stat-value">'+fmtMoney(inv.adjustmentAmount)+'</div></div>'+
+        '<div class="card stat"><div class="stat-label">Total Headcount Charge</div><div class="stat-value">'+fmtMoney(inv.totalHeadcountCharge)+'</div></div>'+
         '<div class="card stat"><div class="stat-label">Unutilised Benefit</div><div class="stat-value">'+fmtMoney(inv.totalUnutilized)+'</div></div>'+
         '<div class="card stat"><div class="stat-label">Total Credit Note</div><div class="stat-value">'+fmtMoney(inv.creditNoteAmount)+'</div></div>'+
         '<div class="card stat"><div class="stat-label">'+(inv.netAmount>=0?'Net Amount Due':'Net Credit Balance')+'</div><div class="stat-value">'+fmtMoney(Math.abs(inv.netAmount))+'</div></div>'+
@@ -1056,24 +1117,41 @@
     '</div>'+
     '<div class="card">'+
       '<div class="card-title">Calculation Detail</div>'+
-      '<details><summary class="link-btn" style="cursor:pointer;">Headcount Adjustment</summary>'+
+      '<details><summary class="link-btn" style="cursor:pointer;">Headcount Adjustment (True-Up for '+year+')</summary>'+
         '<div class="table-wrap" style="margin-top:10px;"><table class="data-table"><tbody>'+
           '<tr><td>Headcount as at 1 Jan '+year+'</td><td>'+inv.startHeadcount+'</td></tr>'+
           '<tr><td>Headcount as at 31 Dec '+year+'</td><td>'+inv.endHeadcount+'</td></tr>'+
           '<tr><td>Net Change</td><td>'+inv.headcountDelta+'</td></tr>'+
           '<tr><td>Adjustment Units (Net Change &divide; 2)</td><td>'+inv.adjustmentUnits+'</td></tr>'+
           '<tr><td>Rate per Headcount</td><td>'+fmtMoney(inv.rate)+'</td></tr>'+
+          '<tr><td><strong>Headcount Adjustment Amount</strong></td><td><strong>'+fmtMoney(inv.adjustmentAmount)+'</strong></td></tr>'+
         '</tbody></table></div>'+
+      '</details>'+
+      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Headcount Charge for '+(year+1)+' ('+inv.newYearHeadcount+' employees)</summary>'+
+        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table"><tbody>'+
+          '<tr><td>Headcount as at 1 Jan '+(year+1)+'</td><td>'+inv.newYearHeadcount+'</td></tr>'+
+          '<tr><td>Rate per Headcount</td><td>'+fmtMoney(inv.rate)+'</td></tr>'+
+          '<tr><td><strong>Base Headcount Charge</strong></td><td><strong>'+fmtMoney(inv.baseHeadcountCharge)+'</strong></td></tr>'+
+          '<tr><td><strong>Total Headcount Charge (Base + Adjustment)</strong></td><td><strong>'+fmtMoney(inv.totalHeadcountCharge)+'</strong></td></tr>'+
+        '</tbody></table></div>'+
+        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
+        '<thead><tr><th>Employee</th><th>Annual Allocation</th></tr></thead>'+
+        '<tbody>'+(inv.newYearHeadcountList.length ? inv.newYearHeadcountList.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="2" class="muted">No employees on record as at 1 Jan '+(year+1)+'.</td></tr>')+'</tbody></table></div>'+
       '</details>'+
       '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Headcount as at 1 Jan '+year+' ('+inv.startHeadcountList.length+' employees)</summary>'+
         '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
         '<thead><tr><th>Employee</th><th>Annual Allocation</th></tr></thead>'+
         '<tbody>'+(inv.startHeadcountList.length ? inv.startHeadcountList.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="2" class="muted">No employees on record as at 1 Jan '+year+'.</td></tr>')+'</tbody></table></div>'+
       '</details>'+
-      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Membership Changes in '+year+' ('+inv.membershipChanges.length+' employees)</summary>'+
+      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">New Joiners in '+year+' ('+inv.newJoinersList.length+' employees)</summary>'+
         '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
-        '<thead><tr><th>Employee</th><th>Change</th><th>Date</th><th>Annual Allocation</th></tr></thead>'+
-        '<tbody>'+(inv.membershipChanges.length ? inv.membershipChanges.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+e.change+'</td><td>'+fmtDate(e.date)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="4" class="muted">No joiners or terminations recorded in '+year+'.</td></tr>')+'</tbody></table></div>'+
+        '<thead><tr><th>Employee</th><th>Effective Date</th><th>Annual Allocation</th></tr></thead>'+
+        '<tbody>'+(inv.newJoinersList.length ? inv.newJoinersList.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtDate(e.date)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="3" class="muted">No new joiners recorded in '+year+'.</td></tr>')+'</tbody></table></div>'+
+      '</details>'+
+      '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Terminations in '+year+' ('+inv.terminationsList.length+' employees)</summary>'+
+        '<div class="table-wrap" style="margin-top:10px;"><table class="data-table">'+
+        '<thead><tr><th>Employee</th><th>Termination Date</th><th>Annual Allocation</th></tr></thead>'+
+        '<tbody>'+(inv.terminationsList.length ? inv.terminationsList.map(function(e){ return '<tr><td>'+escapeHtml(e.name)+'</td><td>'+fmtDate(e.date)+'</td><td>'+fmtMoney(e.allocation)+'</td></tr>'; }).join('') : '<tr><td colspan="3" class="muted">No terminations recorded in '+year+'.</td></tr>')+'</tbody></table></div>'+
       '</details>'+
       '<details style="margin-top:12px;"><summary class="link-btn" style="cursor:pointer;">Unutilised Benefit</summary>'+
         '<div class="table-wrap" style="margin-top:10px;"><table class="data-table"><tbody>'+
@@ -1418,10 +1496,9 @@
     }
   }
 
-  function exportInvoicePDF(){
+  function exportInvoicePDF(invoiceNumber){
     if(typeof window.jspdf==='undefined' || !window.jspdf.jsPDF){ showToast('PDF export library did not load (needs an internet connection).', 'error'); return; }
-    var now = new Date();
-    var year = (STATE.invoiceYear!=null) ? STATE.invoiceYear : (now.getFullYear()-1);
+    var year = getSelectedInvoiceYear();
     var inv = computeAnnualInvoice(year);
     var invoiceDate = '2 Jan '+(year+1);
     var adjustmentLabel = inv.adjustmentAmount>=0 ? 'Additional Headcount Charge' : 'Headcount Reduction Credit';
@@ -1449,11 +1526,12 @@
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
       doc.text('Invoice Date: '+invoiceDate, margin, 46);
-      doc.text('Period Covered: 1 Jan '+year+' - 31 Dec '+year, margin, 52);
+      doc.text('Invoice No: '+invoiceNumber, margin, 52);
+      doc.text('Period Covered: 1 Jan '+year+' - 31 Dec '+year, margin, 58);
 
-      var cy = 62;
+      var cy = 68;
       doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Headcount Adjustment', margin, cy);
+      doc.text('Headcount Adjustment (True-Up for '+year+')', margin, cy);
       doc.autoTable({
         startY: cy+4, margin:{left:margin, right:margin},
         body: [
@@ -1463,6 +1541,21 @@
           ['Adjustment Units (Net Change / 2)', String(inv.adjustmentUnits)],
           ['Rate per Headcount per Year', fmtMoney(inv.rate)],
           [adjustmentLabel, fmtMoney(Math.abs(inv.adjustmentAmount))]
+        ],
+        theme:'plain', styles:{fontSize:10, cellPadding:1.5},
+        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
+      });
+      cy = doc.lastAutoTable.finalY + 12;
+
+      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Headcount Charge for '+(year+1), margin, cy);
+      doc.autoTable({
+        startY: cy+4, margin:{left:margin, right:margin},
+        body: [
+          ['Headcount as at 1 Jan '+(year+1), String(inv.newYearHeadcount)],
+          ['Rate per Headcount per Year', fmtMoney(inv.rate)],
+          ['Base Headcount Charge', fmtMoney(inv.baseHeadcountCharge)],
+          ['Total Headcount Charge (Base + Adjustment)', fmtMoney(inv.totalHeadcountCharge)]
         ],
         theme:'plain', styles:{fontSize:10, cellPadding:1.5},
         columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
@@ -1489,6 +1582,7 @@
         startY: cy+4, margin:{left:margin, right:margin},
         body: [
           ['Additional Headcount Charge', fmtMoney(inv.additionalCharge)],
+          ['Base Headcount Charge for '+(year+1), fmtMoney(inv.baseHeadcountCharge)],
           ['Less: Credit Note (Unutilised + Headcount Reduction)', '-'+fmtMoney(inv.creditNoteAmount)],
           [inv.netAmount>=0?'Net Amount Due':'Net Credit Balance', fmtMoney(Math.abs(inv.netAmount))],
           ['Invoice Payable Amount', fmtMoney(inv.invoicePayableAmount)]
@@ -1500,6 +1594,23 @@
       doc.setFontSize(8); doc.setTextColor(120,120,120);
       var noteLines = doc.splitTextToSize('Note: Any credit note balance may be applied to offset the following year\'s flex benefit charges.', pageWidth-margin*2);
       doc.text(noteLines, margin, cy);
+
+      doc.addPage();
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Headcount as at 1 Jan '+(year+1)+' - by Employee', margin, 18);
+      doc.setFontSize(9); doc.setTextColor(100,100,100);
+      doc.text('Supporting detail for the base headcount charge above. '+inv.newYearHeadcountList.length+' employee(s) counted.', margin, 24);
+      if(inv.newYearHeadcountList.length){
+        var newYearHcRows = inv.newYearHeadcountList.map(function(e){ return [e.name, fmtMoney(e.allocation)]; });
+        doc.autoTable({
+          startY: 30, margin:{left:margin, right:margin},
+          head:[['Employee','Annual Allocation (SGD)']], body: newYearHcRows,
+          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+        });
+      } else {
+        doc.setFontSize(10); doc.setTextColor(120,120,120);
+        doc.text('No employees on record as at 1 Jan '+(year+1)+'.', margin, 34);
+      }
 
       doc.addPage();
       doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
@@ -1520,19 +1631,38 @@
 
       doc.addPage();
       doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Membership Changes in '+year, margin, 18);
+      doc.text('New Joiners in '+year, margin, 18);
       doc.setFontSize(9); doc.setTextColor(100,100,100);
-      doc.text('Employees who joined or were terminated during the year - the movements behind the net change above.', margin, 24);
-      if(inv.membershipChanges.length){
-        var changeRows = inv.membershipChanges.map(function(e){ return [e.name, e.change, fmtDate(e.date), fmtMoney(e.allocation)]; });
+      doc.text('Sorted by Effective Date - the joiners behind the net change above.', margin, 24);
+      var joinersCy = 30;
+      if(inv.newJoinersList.length){
+        var joinerRows = inv.newJoinersList.map(function(e){ return [e.name, fmtDate(e.date), fmtMoney(e.allocation)]; });
         doc.autoTable({
-          startY: 30, margin:{left:margin, right:margin},
-          head:[['Employee','Change','Date','Annual Allocation (SGD)']], body: changeRows,
+          startY: joinersCy, margin:{left:margin, right:margin},
+          head:[['Employee','Effective Date','Annual Allocation (SGD)']], body: joinerRows,
+          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+        });
+        joinersCy = doc.lastAutoTable.finalY + 16;
+      } else {
+        doc.setFontSize(10); doc.setTextColor(120,120,120);
+        doc.text('No new joiners recorded in '+year+'.', margin, 34);
+        joinersCy = 46;
+      }
+
+      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
+      doc.text('Terminations in '+year, margin, joinersCy);
+      doc.setFontSize(9); doc.setTextColor(100,100,100);
+      doc.text('Sorted by Termination Date - the departures behind the net change above.', margin, joinersCy+6);
+      if(inv.terminationsList.length){
+        var terminationRows = inv.terminationsList.map(function(e){ return [e.name, fmtDate(e.date), fmtMoney(e.allocation)]; });
+        doc.autoTable({
+          startY: joinersCy+12, margin:{left:margin, right:margin},
+          head:[['Employee','Termination Date','Annual Allocation (SGD)']], body: terminationRows,
           theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
         });
       } else {
         doc.setFontSize(10); doc.setTextColor(120,120,120);
-        doc.text('No joiners or terminations recorded in '+year+'.', margin, 34);
+        doc.text('No terminations recorded in '+year+'.', margin, joinersCy+16);
       }
 
       doc.addPage();
@@ -2060,7 +2190,7 @@
       case 'save-invoice-rate': return saveInvoiceRate();
       case 'edit-client-name': STATE.editingClientName=true; render(); return Promise.resolve();
       case 'save-client-name': return saveClientName();
-      case 'export-invoice-pdf': exportInvoicePDF(); return Promise.resolve();
+      case 'export-invoice-pdf': return ensureInvoiceNumber(getSelectedInvoiceYear()).then(function(invoiceNumber){ exportInvoicePDF(invoiceNumber); render(); });
       case 'filter-history': STATE.historyFilter=btn.dataset.filter; render(); return Promise.resolve();
       case 'filter-staff': STATE.staffRoleFilter=btn.dataset.filter; render(); return Promise.resolve();
       default: return Promise.resolve();
