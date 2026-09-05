@@ -52,6 +52,7 @@
     reportMonth: null, reportYear: null,
     invoiceYear: null,
     editingInvoiceRate: false,
+    editingClientName: false,
     appSettings: {},
     _realtimeSubscribed: false
   };
@@ -295,12 +296,17 @@
     return isNaN(n) ? 88 : n;
   }
 
+  function getClientCompanyName(){
+    var v = STATE.appSettings && STATE.appSettings.client_company_name;
+    return (v && String(v).trim()) ? String(v).trim() : 'Client';
+  }
+
   function buildInvoiceYearOptions(){
     var now = new Date();
     var years = {};
     years[now.getFullYear()] = true;
     years[now.getFullYear()-1] = true;
-    STATE.profiles.forEach(function(p){ if(p.date_of_joining){ years[parseInt(p.date_of_joining.slice(0,4),10)]=true; } });
+    STATE.profiles.forEach(function(p){ if(p.effective_date){ years[parseInt(p.effective_date.slice(0,4),10)]=true; } });
     STATE.claims.forEach(function(c){ if(c.receipt_date){ years[parseInt(c.receipt_date.slice(0,4),10)]=true; } });
     return Object.keys(years).map(Number).sort(function(a,b){ return b-a; });
   }
@@ -310,18 +316,18 @@
     var endStr = year+'-12-31';
     var rate = getInvoiceRate();
 
-    // An employee with no Date of Employment recorded is treated as already
+    // An employee with no Effective Date recorded is treated as already
     // employed (rather than excluded) - missing data shouldn't silently drop
     // them from headcount or entitlement totals. Only an explicit
     // Date of Termination excludes them from a given date/period.
     var employedAt = function(p, dateStr){
       return p.role==='user' &&
-        (!p.date_of_joining || p.date_of_joining<=dateStr) &&
+        (!p.effective_date || p.effective_date<=dateStr) &&
         (!p.date_of_termination || p.date_of_termination>=dateStr);
     };
     var employedDuringRange = function(p, rangeStartStr, rangeEndStr){
       return p.role==='user' &&
-        (!p.date_of_joining || p.date_of_joining<=rangeEndStr) &&
+        (!p.effective_date || p.effective_date<=rangeEndStr) &&
         (!p.date_of_termination || p.date_of_termination>=rangeStartStr);
     };
 
@@ -366,13 +372,13 @@
       .sort(function(a,b){ return a.name.localeCompare(b.name); });
 
     var joinedDuringYear = STATE.profiles.filter(function(p){
-      return p.role==='user' && p.date_of_joining && p.date_of_joining>startStr && p.date_of_joining<=endStr;
+      return p.role==='user' && p.effective_date && p.effective_date>startStr && p.effective_date<=endStr;
     });
     var terminatedDuringYear = STATE.profiles.filter(function(p){
       return p.role==='user' && p.date_of_termination && p.date_of_termination>=startStr && p.date_of_termination<=endStr;
     });
     var membershipChanges = joinedDuringYear.map(function(p){
-      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Joined', date:p.date_of_joining};
+      return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Joined', date:p.effective_date};
     }).concat(terminatedDuringYear.map(function(p){
       return {name:p.name, allocation:Number(p.annual_allocation)||0, change:'Terminated', date:p.date_of_termination};
     })).sort(function(a,b){ return a.name.localeCompare(b.name); });
@@ -503,18 +509,15 @@
 
   function init(){
     if(!supabase){ STATE.loading = false; render(); return; }
-    if(window.location.hash.indexOf('type=recovery') !== -1 || window.location.search.indexOf('type=recovery') !== -1){
-      STATE.authView = 'reset-password';
-    }
     STATE.loading = true; render();
     supabase.auth.getSession().then(function(res){
       STATE.session = res.data.session;
       return STATE.session ? loadProfileAndData() : null;
     }).then(function(){
       STATE.loading = false;
-      if(STATE.profile && STATE.authView !== 'reset-password'){ STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard'; }
+      if(STATE.profile){ STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard'; }
       render();
-      if(STATE.profile && STATE.authView !== 'reset-password'){ subscribeRealtime(); resetInactivityTimer(); }
+      if(STATE.profile){ subscribeRealtime(); }
     }).catch(function(err){
       console.error(err);
       STATE.session = null; STATE.profile = null; STATE.loading = false;
@@ -524,11 +527,6 @@
     supabase.auth.onAuthStateChange(function(event, session){
       if(event === 'SIGNED_OUT'){
         STATE.session = null; STATE.profile = null; STATE.activeTab = null;
-        if(inactivityTimer){ clearTimeout(inactivityTimer); inactivityTimer = null; }
-        render();
-      }
-      if(event === 'PASSWORD_RECOVERY'){
-        STATE.session = session; STATE.authView = 'reset-password'; STATE.authError=''; STATE.authInfo='';
         render();
       }
     });
@@ -541,13 +539,8 @@
     var app = document.getElementById('app');
     if(!supabase){ app.innerHTML = renderSetupNeeded(); return; }
     if(STATE.loading){ app.innerHTML = renderLoading() + renderBrandFooter(); return; }
-    if(STATE.authView === 'reset-password'){
-      app.innerHTML = renderResetPassword() + renderBrandFooter();
-    } else if(!STATE.session || !STATE.profile){
-      app.innerHTML = renderAuthScreen() + renderBrandFooter();
-    } else {
-      app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
-    }
+    if(!STATE.session || !STATE.profile){ app.innerHTML = renderAuthScreen() + renderBrandFooter(); return; }
+    app.innerHTML = (STATE.profile.role==='admin' ? renderAdminShell() : renderUserShell()) + renderBrandFooter();
     if(STATE.modal){
       var host = document.createElement('div');
       host.innerHTML = renderModal();
@@ -591,17 +584,6 @@
   function renderModal(){
     if(!STATE.modal) return '';
     var m = STATE.modal;
-    if(m.message){
-      return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
-        '<div class="modal-box">'+
-          '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
-          '<div class="modal-body">'+
-            '<p style="margin:0 0 16px;">'+escapeHtml(m.message)+'</p>'+
-            '<button class="btn btn-primary" data-action="close-modal">OK</button>'+
-          '</div>'+
-        '</div>'+
-      '</div>';
-    }
     return '<div class="modal-overlay" onclick="if(event.target===event.currentTarget){window.closeReceiptModal();}">'+
       '<div class="modal-box">'+
         '<div class="modal-header"><span>'+escapeHtml(m.title)+'</span><button class="link-btn" data-action="close-modal">Close</button></div>'+
@@ -633,18 +615,6 @@
         '<button data-action="show-signup">New User Login</button>'+
         '<button data-action="forgot-password">Forgot password?</button>'+
       '</div>'+
-    '</div></div>';
-  }
-
-  function renderResetPassword(){
-    return '<div class="login-wrap"><div class="login-card">'+
-      '<div class="login-brand"><div class="login-logo">FB</div><h1>Set New Password</h1><p class="muted">Choose a new password for your account</p></div>'+
-      '<form data-form="reset-password" class="login-form">'+
-        '<label>New Password<input type="password" name="password" autocomplete="new-password" required placeholder="********" /></label>'+
-        '<label>Confirm Password<input type="password" name="confirmPassword" autocomplete="new-password" required placeholder="********" /></label>'+
-        (STATE.authError ? '<div class="field-error">'+escapeHtml(STATE.authError)+'</div>' : '')+
-        '<button type="submit" class="btn btn-primary btn-block">Set new password</button>'+
-      '</form>'+
     '</div></div>';
   }
 
@@ -1181,6 +1151,10 @@
       return '<tr><td>'+escapeHtml(r.name)+'</td><td>'+r.count+'</td><td>'+fmtMoney(r.total)+'</td><td class="tiny">'+r.reasonBreakdown+'</td></tr>';
     }).join('');
 
+    var clientNameCell = STATE.editingClientName
+      ? '<input type="text" maxlength="120" style="width:180px" id="client-name-input" value="'+escapeHtml(getClientCompanyName())+'"/> <button class="btn btn-sm btn-primary" data-action="save-client-name">Save</button>'
+      : '<span class="muted">Prepared for: '+escapeHtml(getClientCompanyName())+'</span> <button class="link-btn" data-action="edit-client-name">Edit</button>';
+
     return ''+
     '<div class="card"><div class="card-title">Monthly Utilisation Report</div>'+
       '<div class="report-controls">'+
@@ -1189,6 +1163,7 @@
         '<button class="btn btn-ghost btn-sm" data-action="export-report">Export to Excel</button>'+
         '<button class="btn btn-ghost btn-sm" data-action="export-report-pdf">Export to PDF for HR</button>'+
       '</div>'+
+      '<div class="field-hint" style="margin:10px 0;">'+clientNameCell+'</div>'+
       '<div class="report-summary">'+escapeHtml(period.label)+' - Total claimed (approved): <strong>'+fmtMoney(report.totalClaimed)+'</strong> across <strong>'+report.totalCount+'</strong> submission(s). '+
         '<strong>'+report.totalRejectedCount+'</strong> submission(s) rejected, totaling <strong>'+fmtMoney(report.totalRejectedAmount)+'</strong>.</div>'+
     '</div>'+
@@ -1327,7 +1302,7 @@
       doc.setFontSize(11);
       doc.text('Monthly Utilisation Report - '+periodLabel, margin, 27);
       doc.setFontSize(9);
-      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for HR', margin, 34);
+      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for '+getClientCompanyName(), margin, 34);
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
@@ -1587,7 +1562,6 @@
     var password = form.password.value;
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Logging in...';
-    STATE.authInfo = '';
     return supabase.auth.signInWithPassword({email:email, password:password}).then(function(res){
       if(res.error){ STATE.authError = res.error.message; render(); return; }
       STATE.authError=''; STATE.authInfo=''; STATE.session = res.data.session;
@@ -1597,33 +1571,11 @@
         STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard';
         render();
         subscribeRealtime();
-        resetInactivityTimer();
       }).catch(function(err){
         STATE.loading=false; STATE.session=null; STATE.profile=null;
         if(err.message!=='deactivated'){ STATE.authError = err.message; }
         render();
       });
-    });
-  }
-
-  function doResetPassword(form){
-    var password = form.password.value;
-    var confirmPassword = form.confirmPassword.value;
-    if(password !== confirmPassword){ STATE.authError='Passwords do not match.'; render(); return Promise.resolve(); }
-    if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
-    STATE.authError='';
-    STATE.authInfo='';
-    var btn = form.querySelector('button[type=submit]');
-    btn.disabled = true; btn.textContent = 'Saving...';
-    return supabase.auth.updateUser({password:password}).then(function(res){
-      if(res.error){ STATE.authError = res.error.message; render(); return; }
-      return supabase.auth.signOut().then(function(){
-        STATE.session=null; STATE.profile=null; STATE.authView='login'; STATE.authError='';
-        STATE.authInfo='Password updated! Please log in with your new password.';
-        render();
-      });
-    }).catch(function(err){
-      STATE.authError = (err && err.message) || String(err); render();
     });
   }
 
@@ -1635,7 +1587,6 @@
     if(password.length < 6){ STATE.authError='Password must be at least 6 characters.'; render(); return Promise.resolve(); }
     var btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Creating account...';
-    STATE.authInfo = '';
     var redirectTo = window.location.origin + window.location.pathname;
     return supabase.auth.signUp({email:email, password:password, options:{emailRedirectTo:redirectTo}}).then(function(res){
       if(res.error){
@@ -1663,7 +1614,6 @@
           STATE.activeTab = STATE.profile.role==='admin' ? 'approvals' : 'dashboard';
           render();
           subscribeRealtime();
-          resetInactivityTimer();
         });
       }
       STATE.authView='login'; STATE.authError='';
@@ -1676,15 +1626,14 @@
     var emailInput = document.querySelector('form[data-form="login"] input[name="email"]');
     var email = emailInput ? emailInput.value.trim() : '';
     if(!email){ showToast('Enter your email above first, then click "Forgot password?".', 'error'); return Promise.resolve(); }
-    STATE.authError = ''; STATE.authInfo = ''; render();
+    STATE.authError = ''; render();
     var btn = document.querySelector('[data-action="forgot-password"]');
     var originalLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
     var redirectTo = window.location.origin + window.location.pathname;
     return withTimeout(supabase.auth.resetPasswordForEmail(email, {redirectTo:redirectTo}), 8000, 'Password reset request').then(function(res){
       if(res.error){ showToast('Could not send reset email: '+res.error.message, 'error'); return; }
-      STATE.modal = {title:'Check your email', message:'We\'ve sent a password reset link to '+email+'. Check your inbox (and spam folder) for an email from noreply@cresco.sg.'};
-      render();
+      showToast('Password reset email sent - check your inbox.', 'success');
     }).catch(function(err){
       showToast('Could not send reset email: '+((err && err.message) || err), 'error');
     }).then(function(){
@@ -2019,6 +1968,18 @@
     }).then(function(){ render(); });
   }
 
+  function saveClientName(){
+    var input = document.getElementById('client-name-input');
+    var val = input ? input.value.trim() : '';
+    if(!val){ showToast('Please enter a company name.', 'error'); return Promise.resolve(); }
+    STATE.editingClientName = false;
+    return supabase.from('app_settings').upsert({key:'client_company_name', value:val}, {onConflict:'key'}).then(function(res){
+      if(res.error){ showToast('Could not update company name: '+res.error.message, 'error'); return; }
+      showToast('Report company name updated.', 'success');
+      return loadAppData();
+    }).then(function(){ render(); });
+  }
+
   function addBenefit(form){
     var cat = form.category.value.trim();
     if(!cat) return Promise.resolve();
@@ -2097,6 +2058,8 @@
       case 'export-report-pdf': exportReportPDF(); return Promise.resolve();
       case 'edit-invoice-rate': STATE.editingInvoiceRate=true; render(); return Promise.resolve();
       case 'save-invoice-rate': return saveInvoiceRate();
+      case 'edit-client-name': STATE.editingClientName=true; render(); return Promise.resolve();
+      case 'save-client-name': return saveClientName();
       case 'export-invoice-pdf': exportInvoicePDF(); return Promise.resolve();
       case 'filter-history': STATE.historyFilter=btn.dataset.filter; render(); return Promise.resolve();
       case 'filter-staff': STATE.staffRoleFilter=btn.dataset.filter; render(); return Promise.resolve();
@@ -2111,7 +2074,6 @@
     var type = form.dataset.form;
     if(type==='login') return doLogin(form);
     if(type==='signup') return doSignup(form);
-    if(type==='reset-password') return doResetPassword(form);
     if(type==='submit-claim') return submitClaim(form);
     if(type==='invite-staff') return inviteStaff(form);
     if(type==='add-benefit') return addBenefit(form);
@@ -2275,37 +2237,8 @@
     }
   });
 
-  /* =========================================================
-     AUTO-LOGOUT ON INACTIVITY
-     Protects against shared/company devices where a user forgot
-     to log out - signs out automatically after a period of no
-     interaction, rather than leaving the session open indefinitely.
-  ========================================================== */
-  var INACTIVITY_LIMIT_MS = 15 * 60 * 1000; // 15 minutes
-  var inactivityTimer = null;
-
-  function resetInactivityTimer(){
-    if(!(STATE.session && STATE.profile)) return;
-    if(inactivityTimer) clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(function(){
-      if(STATE.session && STATE.profile){
-        supabase.auth.signOut().then(function(){
-          STATE.authInfo = 'You were logged out due to inactivity. Please log in again.';
-          render();
-        });
-      }
-    }, INACTIVITY_LIMIT_MS);
-  }
-
-  function setupInactivityTracking(){
-    ['mousemove','mousedown','keydown','scroll','touchstart','click'].forEach(function(evt){
-      document.addEventListener(evt, resetInactivityTimer, {passive:true});
-    });
-  }
-
   window.addEventListener('dragover', function(e){ e.preventDefault(); });
   window.addEventListener('drop', function(e){ e.preventDefault(); });
 
-  setupInactivityTracking();
   init();
 })();
