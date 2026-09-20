@@ -2365,27 +2365,37 @@
       var brandColor = CLIENT_COLOR_RGB;
 
       /* ---- Page 1: Cover, Key Metrics, Key Insights ---- */
-      doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.rect(0, 0, pageWidth, 38, 'F');
-      var logoSize = 24;
-      doc.setFillColor(255,255,255);
-      doc.roundedRect(margin-4, 7, logoSize+8, logoSize+8, 2, 2, 'F');
-      doc.addImage(LOGO_ICON_DATA_URI, 'PNG', margin, 11, logoSize, logoSize);
-      doc.setTextColor(255,255,255);
-      doc.setFontSize(19);
-      doc.text('Flex Benefits Portal', pageWidth-margin, 18, {align:'right'});
-      doc.setFontSize(11);
-      doc.text('Monthly Utilisation Report - '+periodLabel, pageWidth-margin, 27, {align:'right'});
+      var accent = brandColor;
+      // Light header, same concept as the invoices: logo left, title right,
+      // and the client colour kept to a thin rule, small section ticks and
+      // the table-header outline instead of a solid banner.
+      var logoSize = 30;
+      doc.addImage(LOGO_ICON_DATA_URI, 'PNG', margin-1, 1.5, logoSize, logoSize);
+      doc.setTextColor(50,50,50);
+      doc.setFontSize(15);
+      doc.text('Monthly Utilisation Report - '+periodLabel, pageWidth-margin, 15, {align:'right'});
       doc.setFontSize(9);
-      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for '+getClientCompanyName(), pageWidth-margin, 34, {align:'right'});
+      doc.setTextColor(120,120,120);
+      doc.text('Flex Benefits Portal', pageWidth-margin, 21, {align:'right'});
+      doc.text('Cresco Insurance Agency Pte Ltd  |  Prepared for '+getClientCompanyName(), pageWidth-margin, 26, {align:'right'});
+      doc.setDrawColor(accent[0],accent[1],accent[2]);
+      doc.setLineWidth(0.8);
+      doc.line(margin, 30, pageWidth-margin, 30);
+
+      var sectionHeading = function(text, y){
+        doc.setFillColor(accent[0],accent[1],accent[2]);
+        doc.rect(margin, y-4, 2.2, 4.6, 'F');
+        doc.setFontSize(12); doc.setTextColor(40,40,40);
+        doc.text(text, margin+5, y);
+      };
+      var headLight = {fillColor:[247,247,247], textColor:[60,60,60], fontStyle:'bold', lineColor:accent, lineWidth:0.3};
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
-      doc.text('Generated '+fmtDate(todayStr()), margin, 46);
+      doc.text('Generated '+fmtDate(todayStr()), margin, 38);
 
-      var cy = 54;
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Key Metrics', margin, cy);
+      var cy = 48;
+      sectionHeading('Key Metrics', cy);
       var metrics = [
         ['Total Claimed (Approved)', fmtMoney(report.totalClaimed)+' SGD'],
         ['Total Entitlement Pool', fmtMoney(totalEntitlementPool)+' SGD'],
@@ -2402,8 +2412,7 @@
       });
       cy = doc.lastAutoTable.finalY + 10;
 
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Key Insights', margin, cy); cy += 6;
+      sectionHeading('Key Insights', cy); cy += 6;
       doc.setFontSize(10); doc.setTextColor(40,40,40);
       var insights = [];
       if(topCategory) insights.push('The most utilised benefit this period is '+topCategory.name+', accounting for '+fmtMoney(topCategory.total)+' SGD.');
@@ -2423,14 +2432,12 @@
       });
       cy += 8;
       if(cy > pageHeight-75){ doc.addPage(); cy = 20; }
-      doc.setFontSize(12); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Amount Claimed by Category', margin, cy);
+      sectionHeading('Amount Claimed by Category', cy);
       drawBarChart(doc, margin, cy+6, pageWidth-margin*2, 55, catChartData, {valueFormat:function(v){ return fmtMoney(v); }, barColor:brandColor});
 
       /* ---- Page: Category + Employee tables ---- */
       doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('By Benefit Category', margin, 18);
+      sectionHeading('By Benefit Category', 18);
       var catRows = STATE.benefits.map(function(b){
         var r = report.byCategory[b]||{count:0,total:0};
         return [b, String(r.count), fmtMoney(r.total)];
@@ -2438,13 +2445,12 @@
       doc.autoTable({
         startY: 24, margin:{left:margin, right:margin},
         head:[['Category','# Claims','Amount Claimed (SGD)']], body: catRows,
-        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+        theme:'grid', headStyles:headLight, styles:{fontSize:9, lineColor:[225,225,225]}
       });
 
       var empSorted = empStats.slice().sort(function(a,b){ return b.pct-a.pct; });
       var empChartTop = doc.lastAutoTable.finalY + 14;
-      doc.setFontSize(12); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Top Employees by Amount Claimed', margin, empChartTop);
+      sectionHeading('Top Employees by Amount Claimed', empChartTop);
       var topEmp = empStats.slice().sort(function(a,b){ return b.total-a.total; }).slice(0,8)
         .map(function(e){ return {label:e.name, value:Number(e.total.toFixed(2))}; });
       if(topEmp.length){
@@ -2456,21 +2462,19 @@
 
       /* ---- Page: Full employee table, sorted by utilisation ---- */
       doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('By Employee - '+periodLabel, margin, 18);
+      sectionHeading('By Employee - '+periodLabel, 18);
       var empRows = empSorted.map(function(e){
         return [e.name, String(e.count), fmtMoney(e.total), fmtMoney(e.allocation), e.pct.toFixed(1)+'%'];
       });
       doc.autoTable({
         startY: 24, margin:{left:margin, right:margin},
         head:[['Employee','# Claims','Amount Claimed (SGD)','Entitlement (SGD)','Utilisation %']], body: empRows,
-        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+        theme:'grid', headStyles:headLight, styles:{fontSize:9, lineColor:[225,225,225]}
       });
 
       /* ---- Page: Rejected claims ---- */
       doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Rejected Claims - '+periodLabel, margin, 18);
+      sectionHeading('Rejected Claims - '+periodLabel, 18);
       if(report.rejectedClaims.length){
         var rejRows = report.rejectedClaims.map(function(rc){
           return [rc.employeeName, rc.category, fmtMoney(rc.amount), rc.reason];
@@ -2478,7 +2482,7 @@
         doc.autoTable({
           startY: 24, margin:{left:margin, right:margin},
           head:[['Employee','Category','Amount (SGD)','Reason']], body: rejRows,
-          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:8},
+          theme:'grid', headStyles:headLight, styles:{fontSize:8, lineColor:[225,225,225]},
           columnStyles:{3:{cellWidth:70}}
         });
       } else {
@@ -2521,32 +2525,45 @@
       var margin = 15;
       var brandColor = CRESCO_COLOR_RGB;
 
-      doc.setFillColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.rect(0, 0, pageWidth, 38, 'F');
-      var logoW = 42, logoH = logoW*(90/285);
-      doc.setFillColor(255,255,255);
-      doc.roundedRect(margin-4, 7, logoW+8, logoH+8, 2, 2, 'F');
-      doc.addImage(CRESCO_LOGO_DATA_URI, 'PNG', margin, 11, logoW, logoH);
-      doc.setTextColor(255,255,255);
+      var accent = brandColor;
+      // Light header (same concept as the Initial Roster / New Hire invoice):
+      // logo left, title right, and the Cresco red kept to a thin rule, small
+      // section ticks and the table-header outline instead of a solid banner.
+      var logoW = 30, logoH = logoW*(90/285);
+      doc.addImage(CRESCO_LOGO_DATA_URI, 'PNG', margin, 10, logoW, logoH);
+      doc.setTextColor(50,50,50);
       doc.setFontSize(15);
-      doc.text('Annual Invoice', pageWidth-margin, 17, {align:'right'});
-      doc.setFontSize(10);
-      doc.text('Headcount Adjustment & Credit Note', pageWidth-margin, 24, {align:'right'});
+      doc.text('Annual Invoice', pageWidth-margin, 15, {align:'right'});
       doc.setFontSize(9);
-      doc.text('Flex Benefits Portal by Cresco Insurance Agency Pte Ltd', pageWidth-margin, 32, {align:'right'});
+      doc.setTextColor(120,120,120);
+      doc.text('Headcount Adjustment & Credit Note', pageWidth-margin, 21, {align:'right'});
+      doc.text('Flex Benefits Portal by Cresco Insurance Agency Pte Ltd', pageWidth-margin, 26, {align:'right'});
+      doc.setDrawColor(accent[0],accent[1],accent[2]);
+      doc.setLineWidth(0.8);
+      doc.line(margin, 30, pageWidth-margin, 30);
+
+      var sectionHeading = function(text, y){
+        doc.setFillColor(accent[0],accent[1],accent[2]);
+        doc.rect(margin, y-4, 2.2, 4.6, 'F');
+        doc.setFontSize(12); doc.setTextColor(40,40,40);
+        doc.text(text, margin+5, y);
+      };
+      var headLight = {fillColor:[247,247,247], textColor:[60,60,60], fontStyle:'bold', lineColor:accent, lineWidth:0.3};
 
       doc.setTextColor(40,40,40);
       doc.setFontSize(9);
-      doc.text('Invoice Date: '+invoiceDate, margin, 46);
-      if(opts.preview){ doc.setTextColor(200,120,0); doc.text('Invoice No: '+invoiceNumber, margin, 52); doc.setTextColor(40,40,40); }
-      else { doc.text('Invoice No: '+invoiceNumber, margin, 52); }
-      var headerY = 58;
-      if(opts.supersedesNumber){ doc.setTextColor(120,120,120); doc.text('Supersedes voided invoice: '+opts.supersedesNumber, margin, headerY); doc.setTextColor(40,40,40); headerY += 6; }
+      var iy = 38;
+      doc.text('Invoice Date: '+invoiceDate, margin, iy);
+      if(opts.preview){ doc.setTextColor(200,120,0); doc.text('Invoice No: '+invoiceNumber, margin, iy+6); doc.setTextColor(40,40,40); }
+      else { doc.text('Invoice No: '+invoiceNumber, margin, iy+6); }
+      var headerY = iy+12;
+      doc.text('Bill To: '+getClientCompanyName(), margin, headerY);
+      if(opts.supersedesNumber){ headerY += 6; doc.setTextColor(120,120,120); doc.text('Supersedes voided invoice: '+opts.supersedesNumber, margin, headerY); doc.setTextColor(40,40,40); }
+      headerY += 6;
       doc.text('Period Covered: 1 Jan '+year+' - 31 Dec '+year, margin, headerY);
 
-      var cy = headerY+10;
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Headcount Adjustment (True-Up for '+year+')', margin, cy);
+      var cy = headerY+12;
+      sectionHeading('Headcount Adjustment (True-Up for '+year+')', cy);
       doc.autoTable({
         startY: cy+4, margin:{left:margin, right:margin},
         body: [
@@ -2562,8 +2579,7 @@
       });
       cy = doc.lastAutoTable.finalY + 12;
 
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Headcount Charge for '+(year+1), margin, cy);
+      sectionHeading('Headcount Charge for '+(year+1), cy);
       doc.autoTable({
         startY: cy+4, margin:{left:margin, right:margin},
         body: [
@@ -2577,8 +2593,7 @@
       });
       cy = doc.lastAutoTable.finalY + 12;
 
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Unutilised Benefit (Credit Note)', margin, cy);
+      sectionHeading('Unutilised Benefit (Credit Note)', cy);
       doc.autoTable({
         startY: cy+4, margin:{left:margin, right:margin},
         body: [
@@ -2591,8 +2606,7 @@
       });
       cy = doc.lastAutoTable.finalY + 12;
 
-      doc.setFontSize(13); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Invoice Summary', margin, cy);
+      sectionHeading('Invoice Summary', cy);
       doc.autoTable({
         startY: cy+4, margin:{left:margin, right:margin},
         body: [
@@ -2602,8 +2616,11 @@
           [inv.netAmount>=0?'Net Amount Due':'Net Credit Balance', fmtMoney(Math.abs(inv.netAmount))],
           ['Invoice Payable Amount', fmtMoney(inv.invoicePayableAmount)]
         ],
-        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:10, cellPadding:2},
-        columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
+        theme:'grid', headStyles:headLight, styles:{fontSize:10, cellPadding:2, lineColor:[225,225,225]},
+        columnStyles:{0:{fontStyle:'bold', cellWidth:110}},
+        didParseCell: function(data){
+          if(data.row.index===4){ data.cell.styles.fontStyle='bold'; data.cell.styles.fillColor=[250,240,241]; }
+        }
       });
       cy = doc.lastAutoTable.finalY + 10;
       doc.setFontSize(8); doc.setTextColor(120,120,120);
@@ -2611,8 +2628,7 @@
       doc.text(noteLines, margin, cy);
 
       doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Headcount as at 1 Jan '+(year+1)+' - by Employee', margin, 18);
+      sectionHeading('Headcount as at 1 Jan '+(year+1)+' - by Employee', 18);
       doc.setFontSize(9); doc.setTextColor(100,100,100);
       doc.text('Supporting detail for the base headcount charge above. '+inv.newYearHeadcountList.length+' employee(s) counted.', margin, 24);
       if(inv.newYearHeadcountList.length){
@@ -2620,7 +2636,7 @@
         doc.autoTable({
           startY: 30, margin:{left:margin, right:margin},
           head:[['Employee','Annual Allocation (SGD)']], body: newYearHcRows,
-          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+          theme:'grid', headStyles:headLight, styles:{fontSize:9, lineColor:[225,225,225]}
         });
       } else {
         doc.setFontSize(10); doc.setTextColor(120,120,120);
@@ -2628,8 +2644,7 @@
       }
 
       doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Headcount as at 1 Jan '+year+' - by Employee', margin, 18);
+      sectionHeading('Headcount as at 1 Jan '+year+' - by Employee', 18);
       doc.setFontSize(9); doc.setTextColor(100,100,100);
       doc.text('Supporting detail for the headcount adjustment above. '+inv.startHeadcountList.length+' employee(s) counted.', margin, 24);
       if(inv.startHeadcountList.length){
@@ -2637,7 +2652,7 @@
         doc.autoTable({
           startY: 30, margin:{left:margin, right:margin},
           head:[['Employee','Annual Allocation (SGD)']], body: startHcRows,
-          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+          theme:'grid', headStyles:headLight, styles:{fontSize:9, lineColor:[225,225,225]}
         });
       } else {
         doc.setFontSize(10); doc.setTextColor(120,120,120);
@@ -2645,8 +2660,7 @@
       }
 
       doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('New Joiners in '+year, margin, 18);
+      sectionHeading('New Joiners in '+year, 18);
       doc.setFontSize(9); doc.setTextColor(100,100,100);
       doc.text('Sorted by Effective Date - the joiners behind the net change above.', margin, 24);
       var joinersCy = 30;
@@ -2655,7 +2669,7 @@
         doc.autoTable({
           startY: joinersCy, margin:{left:margin, right:margin},
           head:[['Employee','Effective Date','Months Billed','Prorated Entitlement (SGD)','Invoice #']], body: joinerRows,
-          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+          theme:'grid', headStyles:headLight, styles:{fontSize:9, lineColor:[225,225,225]}
         });
         joinersCy = doc.lastAutoTable.finalY + 16;
       } else {
@@ -2664,8 +2678,7 @@
         joinersCy = 46;
       }
 
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Terminations in '+year, margin, joinersCy);
+      sectionHeading('Terminations in '+year, joinersCy);
       doc.setFontSize(9); doc.setTextColor(100,100,100);
       doc.text('Sorted by Termination Date - the departures behind the net change above.', margin, joinersCy+6);
       if(inv.terminationsList.length){
@@ -2673,7 +2686,7 @@
         doc.autoTable({
           startY: joinersCy+12, margin:{left:margin, right:margin},
           head:[['Employee','Termination Date','Months Billed','Prorated Entitlement (SGD)']], body: terminationRows,
-          theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+          theme:'grid', headStyles:headLight, styles:{fontSize:9, lineColor:[225,225,225]}
         });
       } else {
         doc.setFontSize(10); doc.setTextColor(120,120,120);
@@ -2681,8 +2694,7 @@
       }
 
       doc.addPage();
-      doc.setFontSize(14); doc.setTextColor(brandColor[0],brandColor[1],brandColor[2]);
-      doc.text('Unutilised Amount by Employee - '+year, margin, 18);
+      sectionHeading('Unutilised Amount by Employee - '+year, 18);
       doc.setFontSize(9); doc.setTextColor(100,100,100);
       doc.text('"Invoice #" traces this figure back to the New Hire/Promotion invoice that billed it - blank means the full or estimated allocation was used.', margin, 24);
       var empRows = inv.unutilizedByEmployee.map(function(e){
@@ -2691,7 +2703,7 @@
       doc.autoTable({
         startY: 29, margin:{left:margin, right:margin},
         head:[['Employee','Entitlement (SGD)','Approved Claims (SGD)','Unutilised (SGD)','Invoice #']], body: empRows,
-        theme:'grid', headStyles:{fillColor:brandColor}, styles:{fontSize:9}
+        theme:'grid', headStyles:headLight, styles:{fontSize:9, lineColor:[225,225,225]}
       });
 
       var fileTag = opts.preview ? ('DRAFT-'+year) : String(invoiceNumber).replace(/[^A-Za-z0-9-]/g,'');
