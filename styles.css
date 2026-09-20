@@ -248,3 +248,14 @@
     background-repeat:no-repeat;background-position:right 12px center;}
   select:disabled{opacity:.6;cursor:not-allowed;}
   select:focus{outline:2px solid var(--primary);outline-offset:1px;}
+
+  /* ---------- Cresco polish, admin pass ---------- */
+  input[type=checkbox], input[type=radio]{accent-color:var(--primary);}
+  input[type=date]{font-family:inherit;font-size:14px;color:var(--text);background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 10px;}
+  input[type=date]:focus{outline:2px solid var(--primary);outline-offset:1px;}
+  .field-hint:empty{display:none;}
+  /* ---------- Mobile: keep row actions (Approve/Reject etc.) reachable ---------- */
+  @media(max-width:720px){
+    .data-table td.actions-cell{position:sticky;right:0;background:#fff;box-shadow:-8px 0 8px -6px rgba(0,0,0,.14);z-index:1;}
+    .data-table td.actions-cell .btn{margin-right:4px;}
+  }
