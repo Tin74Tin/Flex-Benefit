@@ -240,7 +240,11 @@
   /* Keep the floating "Powered by" badge from covering the last rows/links. */
   body{padding-bottom:72px;}
   /* Consistent select styling (replaces the default grey Safari dropdown). */
-  .claim-form select, .inline-form select, .reject-panel select, .report-controls select{
-    -webkit-appearance:none;appearance:none;background-color:#fff;
+  select{
+    -webkit-appearance:none;-moz-appearance:none;appearance:none;background-color:#fff;color:var(--text);
+    border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 34px 10px 12px;font-size:14px;font-weight:500;
+    text-transform:none;letter-spacing:0;line-height:1.3;cursor:pointer;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23756a6b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-repeat:no-repeat;background-position:right 12px center;padding-right:34px;cursor:pointer;}
+    background-repeat:no-repeat;background-position:right 12px center;}
+  select:disabled{opacity:.6;cursor:not-allowed;}
+  select:focus{outline:2px solid var(--primary);outline-offset:1px;}
