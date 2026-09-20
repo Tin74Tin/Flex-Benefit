@@ -39,7 +39,7 @@
     background:radial-gradient(circle at 15% 15%, #1a5c56 0%, var(--primary) 45%, var(--primary-dark) 100%);}
   .login-card{background:var(--surface);border-radius:16px;box-shadow:0 20px 50px rgba(6,25,23,.35);padding:36px 34px 28px;width:100%;max-width:380px;}
   .login-brand{text-align:center;margin-bottom:22px;}
-  .login-logo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--primary),#1f7a71);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;letter-spacing:.5px;margin:0 auto 12px;font-size:15px;}
+  .login-logo{width:46px;height:46px;border-radius:10px;object-fit:cover;margin:0 auto 12px;display:block;}
   .login-logo.small{width:28px;height:28px;font-size:11px;margin:0;}
   .login-brand h1{font-size:19px;margin:0 0 4px;letter-spacing:-.2px;}
   .login-brand p{margin:0;font-size:13px;}
@@ -53,9 +53,17 @@
   .field-error{background:var(--danger-bg);color:var(--danger);padding:8px 10px;border-radius:var(--radius-sm);font-size:12.5px;font-weight:600;}
 
   /* ---------- Shell / Topbar / Tabs ---------- */
-  .shell{max-width:1080px;margin:0 auto;padding:0 20px 60px;}
+  /* Widened from 1080px so wide tables (Employee Directory's 12 columns,
+     in particular) have a real shot at fitting without horizontal
+     scrolling on a typical laptop/desktop screen. The 720px/480px
+     breakpoints below still shrink everything down for phones, so this
+     only ever adds room on screens that already have it to spare. */
+  .shell{max-width:1320px;margin:0 auto;padding:0 20px 60px;}
   .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 0;flex-wrap:wrap;gap:10px;}
   .brand-mini{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;color:var(--primary-dark);}
+  .brand-text{display:flex;flex-direction:column;line-height:1.3;gap:1px;}
+  .brand-title{font-weight:700;font-size:15px;color:var(--primary-dark);white-space:nowrap;}
+  .brand-client{font-weight:600;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;}
   .topbar-logo{height:68px;width:auto;object-fit:contain;flex-shrink:0;}
   .topbar-right{display:flex;align-items:center;gap:12px;}
   .user-chip{font-size:13px;font-weight:600;color:var(--text);}
@@ -116,6 +124,14 @@
   .search-input:focus{outline:2px solid var(--primary);outline-offset:1px;}
 
   /* ---------- Buttons ---------- */
+  /* Every clickable button/link below gets user-select:none (plus the
+     -webkit- prefixes Safari/trackpads care about). Without this, a firm
+     trackpad press (macOS "Force Click") can select the button's text or
+     trigger the "Look Up" dictionary popup instead of registering as a
+     click -- the click never reaches the app at all. Non-selectable text
+     removes what Look Up/selection needs to latch onto, so a heavy press
+     just falls through to an ordinary click instead. */
+  button,.btn,.link-btn{-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-touch-callout:none;}
   .btn{border:none;border-radius:var(--radius-sm);padding:10px 16px;font-size:13.5px;font-weight:700;cursor:pointer;transition:filter .15s ease;}
   .btn:hover{filter:brightness(1.06);}
   .btn:active{filter:brightness(.95);}
@@ -132,9 +148,15 @@
 
   /* ---------- Tables ---------- */
   .table-wrap{overflow-x:auto;}
-  .data-table{width:100%;border-collapse:collapse;font-size:13px;}
-  .data-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted);padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap;}
-  .data-table td{padding:10px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  /* Tightened padding/font a notch (was 13px / 8-10px) so wider tables -
+     Employee Directory's 12 columns especially - need less horizontal
+     room to lay out without truncating anything, working together with
+     the widened .shell above to avoid horizontal scrolling on most
+     screens. table-wrap above still scrolls it gracefully on anything
+     narrower, phones included. */
+  .data-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .data-table th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted);padding:7px 8px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  .data-table td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle;}
   .data-table tr:last-child td{border-bottom:none;}
   .actions-cell{white-space:nowrap;}
   .actions-cell .btn{margin-right:6px;}
@@ -193,11 +215,17 @@
     .grid-cards{grid-template-columns:repeat(2,1fr);}
     .bar-row{grid-template-columns:96px 1fr 60px;}
     .shell{padding:0 12px 40px;}
+    .topbar-logo{height:52px;}
+    .brand-title{font-size:14px;}
+    .brand-client{font-size:10px;}
   }
   @media(max-width:480px){
     .grid-cards{grid-template-columns:1fr;}
     .brand-footer{bottom:10px;right:10px;padding:5px 9px;font-size:9.5px;gap:6px;}
     .brand-footer img{height:15px;}
+    .topbar-logo{height:42px;}
+    .brand-title{font-size:13px;}
+    .brand-client{font-size:9.5px;}
   }
 
   /* ---------- Auth extras (signup / invite acceptance) ---------- */
