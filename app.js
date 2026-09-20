@@ -11,8 +11,19 @@
       c.anonKey.indexOf('YOUR-PUBLIC-ANON-KEY') === -1);
   }
 
+  // flowType:'implicit' -- without this, supabase-js defaults to PKCE, which
+  // requires the SAME browser that requested a password reset (or invite)
+  // link to still have a secret in its local storage when the link is
+  // clicked. Reset/invite links are almost always opened from a Mail app or
+  // a different browser/tab than the one that requested them, so PKCE's
+  // exchange fails silently and the person just lands back on the plain
+  // login page instead of the "Set New Password" screen. Implicit flow puts
+  // the session token directly in the link itself, so it works from any
+  // device or browser -- no matching secret required.
   var supabase = configIsValid()
-    ? window.supabase.createClient(window.SUPABASE_CONFIG.url, window.SUPABASE_CONFIG.anonKey)
+    ? window.supabase.createClient(window.SUPABASE_CONFIG.url, window.SUPABASE_CONFIG.anonKey, {
+        auth: { flowType: 'implicit', detectSessionInUrl: true, persistSession: true, autoRefreshToken: true }
+      })
     : null;
 
   // EDIT PER CLIENT: this client's legal name, shown in the topbar.
@@ -308,7 +319,15 @@
       if(c.status==='approved'){ approvedTotal+=amt; byCategory[c.category].approved+=amt; }
       if(c.status==='pending'){ pendingTotal+=amt; byCategory[c.category].pending+=amt; }
     });
-    var allocation = Number(profile.annual_allocation)||0;
+    // Prorate the wallet cap for an employee's own partial first year, the
+    // same way New Hire Invoicing prorates what the client gets billed --
+    // reuses proratedAllocationForYear() so the two never drift apart.
+    // monthsEmployedInYear() already returns 12 (full year) for any year
+    // after the join year on its own, so this naturally reverts to the full
+    // annual_allocation from next January without any reset job.
+    var allocation = (profile.prorate_entitlement_default!==false)
+      ? proratedAllocationForYear(profile, currentYear)
+      : (Number(profile.annual_allocation)||0);
     var available = allocation - approvedTotal - pendingTotal;
     var utilizationPct = allocation>0 ? Math.min(100, (approvedTotal/allocation)*100) : 0;
     return {allocation:allocation, approvedTotal:approvedTotal, pendingTotal:pendingTotal, available:available, utilizationPct:utilizationPct, byCategory:byCategory, year:currentYear};
@@ -537,7 +556,16 @@
 
   function getEntitlementSelection(key, defaultProrate){
     if(!STATE.entitlementSelections[key]){
-      STATE.entitlementSelections[key] = {checked:false, prorate: defaultProrate!==false, waiveStatus:'normal', waiveReason:'', overrideAmount:null};
+      STATE.entitlementSelections[key] = {checked:false, prorate: defaultProrate!==false, prorateManual:false, waiveStatus:'normal', waiveReason:'', overrideAmount:null};
+    } else if(!STATE.entitlementSelections[key].prorateManual && defaultProrate!==undefined){
+      // Keep this row's Prorate checkbox following the employee's standing
+      // setting (Employee Management -> Prorate column) until the admin
+      // explicitly overrides it right here on this row - so changing that
+      // standing setting shows up in the Amount immediately, the next time
+      // this row renders, rather than needing a full page refresh. Once
+      // the admin does touch this row's own checkbox (below), it's treated
+      // as a deliberate one-time override and stops auto-following.
+      STATE.entitlementSelections[key].prorate = defaultProrate!==false;
     }
     return STATE.entitlementSelections[key];
   }
@@ -584,6 +612,68 @@
     });
     items.sort(function(a,b){ return a.effectiveDate.localeCompare(b.effectiveDate); });
     return items;
+  }
+
+  // "Money Holding" / 80% utilisation check for New Hire Invoicing --------
+  // The client doesn't need to be re-invoiced the instant a mid-year new
+  // hire or promotion happens - only once the cash LTP is already holding
+  // on their behalf has been drawn down to the point where 80% or more of
+  // the company's total planned entitlement commitment has been utilised
+  // (i.e. Money Holding has fallen to 20% or less of that planned total).
+  // This is purely a reminder threshold - it never blocks issuing an
+  // invoice manually at any time, at any utilisation level.
+
+  // annual_allocation is a live figure: saveAlloc()/confirmPromotion() write
+  // it onto the profile the instant a new hire is added or a promotion is
+  // confirmed, regardless of whether either has actually been invoiced yet.
+  // So simply summing it across every currently active employee already
+  // reflects the full current commitment - mid-year new hires and
+  // promotions both included - with no risk of double-counting once
+  // they're later billed.
+  function totalPlannedEntitlement(){
+    var today = todayStr();
+    return (STATE.profiles||[]).filter(function(p){
+      return p.role==='user' && (!p.effective_date || p.effective_date<=today) && (!p.date_of_termination || p.date_of_termination>=today);
+    }).reduce(function(s,p){ return s+(Number(p.annual_allocation)||0); }, 0);
+  }
+
+  // Everything actually billed to the client to date (Initial, New Hire and
+  // Promotion invoices via entitlement_invoices, plus every issued Annual
+  // Invoice's net payable amount), minus everything already paid out to
+  // employees via approved claims. This assumes every issued invoice gets
+  // paid in full and promptly - there's no "payment received" tracking yet,
+  // so a client that pays late or short will make this read a little
+  // optimistic until that's built.
+  function moneyHoldingBalance(){
+    var billedEnt = (STATE.entitlementInvoices||[]).filter(function(i){ return i.status==='issued'; })
+      .reduce(function(s,i){ return s+(Number(i.total_amount)||0); }, 0);
+    var billedAnnual = (STATE.annualInvoices||[]).filter(function(i){ return i.status==='issued'; })
+      .reduce(function(s,i){ return s+(Number(i.invoice_payable_amount)||0); }, 0);
+    var paidOut = (STATE.claims||[]).filter(function(c){ return c.status==='approved'; })
+      .reduce(function(s,c){ return s+sgdAmountOf(c); }, 0);
+    return billedEnt + billedAnnual - paidOut;
+  }
+
+  // The single source of truth both the New Hire Invoicing badges and its
+  // transparency panel read from, so the figures shown always match the
+  // figures the reminder is actually based on.
+  function entitlementCushionStatus(){
+    var holding = moneyHoldingBalance();
+    var planned = totalPlannedEntitlement();
+    // Utilisation: how much of the total planned entitlement has already
+    // been drawn down out of what LTP is holding for the client. 0% means
+    // the full planned amount is still sitting in the float; 100% would
+    // mean it's completely exhausted. Clamped to 0 so a holding balance
+    // that's actually ahead of the plan never shows as negative utilisation.
+    var utilisation = planned>0 ? Math.max(0, (planned-holding)/planned) : 0;
+    var pendingCount = pendingEntitlementItems().length;
+    var belowThreshold = planned>0 && utilisation>=0.8;
+    return {
+      holding:holding, planned:planned, utilisation:utilisation, belowThreshold:belowThreshold,
+      // 0 whenever there's nothing to invoice, even at 80%+ utilisation -
+      // the reminder is about the backlog below, not the utilisation alone.
+      reminderCount: (belowThreshold && pendingCount) ? pendingCount : 0
+    };
   }
 
   // Applies this item's Prorate checkbox and any Waive/Override choice to
@@ -986,9 +1076,20 @@
   function loadProfileAndData(){
     return supabase.from('profiles').select('*').eq('id', STATE.session.user.id).single().then(function(res){
       if(res.error || !res.data){ throw new Error('Could not load your account. If you just signed up, make sure your admin invited this exact email.'); }
-      if(!res.data.active){
+      // Two independent ways an account can be locked out: an admin
+      // explicitly flipped Deactivate, or their Date of Termination has
+      // actually arrived. The termination check is deliberately date-based
+      // rather than tied to the `active` flag, so a *future* termination
+      // date (e.g. serving out a notice period) doesn't cut anyone off
+      // early - they keep normal access right up until that date, then are
+      // locked out automatically from the next login attempt onward with no
+      // separate Deactivate step required.
+      var isTerminated = res.data.date_of_termination && res.data.date_of_termination<=todayStr();
+      if(!res.data.active || isTerminated){
         return supabase.auth.signOut().then(function(){
-          STATE.authError = 'This account has been deactivated. Contact your administrator.';
+          STATE.authError = isTerminated
+            ? 'This account\'s employment has ended. Contact your administrator.'
+            : 'This account has been deactivated. Contact your administrator.';
           throw new Error('deactivated');
         });
       }
@@ -1031,8 +1132,19 @@
         STATE.entitlementInvoiceItems = results[10].data || [];
         STATE.annualInvoices = results[11].data || [];
       } else {
-        STATE.profiles = STATE.profile ? [STATE.profile] : [];
         STATE.invites = [];
+        // A regular employee's own profile row (allocation, Prorate
+        // setting, etc.) was only ever fetched once at login and then
+        // reused here from memory - so a standing setting an admin changed
+        // for them (e.g. the Prorate toggle) never showed up until they
+        // logged out and back in, even though this function was already
+        // being re-run (after submitting a claim, or via the realtime
+        // subscription below). Re-fetch it fresh every time so those paths
+        // actually pick up the change.
+        return supabase.from('profiles').select('*').eq('id', STATE.session.user.id).single().then(function(res){
+          if(!res.error && res.data){ STATE.profile = res.data; }
+          STATE.profiles = STATE.profile ? [STATE.profile] : [];
+        });
       }
     });
   }
@@ -1337,7 +1449,6 @@
           '<div class="dropzone-hint">Choose a file, or drag and drop it here</div>'+
         '</div>'+
         (STATE.claimFormError ? '<div class="field-error">'+escapeHtml(STATE.claimFormError)+'</div>' : '')+
-        '<div class="field-hint">Only Gym membership, Health screening, Optical, Dental and Leisure travel are claimable. Other expenses, including petrol, cannot be reimbursed through this wallet.</div>'+
         '<button type="submit" class="btn btn-primary">Submit Claim</button>'+
       '</form></div>';
   }
@@ -1484,7 +1595,11 @@
   ========================================================== */
   function renderAdminShell(){
     var pendingCount = STATE.claims.filter(function(c){ return c.status==='pending'; }).length;
-    var pendingEntCount = pendingEntitlementItems().length;
+    // The Finance tab badge only nags once utilisation has actually hit 80%
+    // (entitlementCushionStatus().reminderCount) - not merely whenever
+    // something is technically un-invoiced, which is normal and fine as
+    // long as the float hasn't run down that far.
+    var financeReminderCount = entitlementCushionStatus().reminderCount;
     var tab = STATE.activeTab || 'approvals';
     return '<div class="shell">'+renderTopbar()+
       '<div class="tabs">'+
@@ -1493,7 +1608,7 @@
         navTab('staff','Employee Management')+
         navTab('benefits','Benefit Categories')+
         navTab('access','User Access')+
-        navTab('finance','Finance'+(pendingEntCount?' <span class="badge">'+pendingEntCount+'</span>':''))+
+        navTab('finance','Finance'+(financeReminderCount?' <span class="badge">'+financeReminderCount+'</span>':''))+
         navTab('reports','Reports')+
       '</div>'+
       '<div class="content">'+
@@ -1513,13 +1628,13 @@
   // crowding the main nav with three separate top-level tabs.
   function renderAdminFinanceModule(){
     var sub = STATE.financeSubTab || 'annual';
-    var pendingEntCount = pendingEntitlementItems().length;
+    var reminderCount = entitlementCushionStatus().reminderCount;
     var subTabBtn = function(key, label){
       return '<button class="tab '+(sub===key?'active':'')+'" data-action="finance-subtab" data-subtab="'+key+'">'+label+'</button>';
     };
     return '<div class="tabs" style="margin-bottom:16px;">'+
         subTabBtn('annual','Annual Invoice')+
-        subTabBtn('newhire','New Hire Invoicing'+(pendingEntCount?' <span class="badge">'+pendingEntCount+'</span>':''))+
+        subTabBtn('newhire','New Hire Invoicing'+(reminderCount?' <span class="badge">'+reminderCount+'</span>':''))+
         subTabBtn('history','Invoice History')+
       '</div>'+
       (sub==='newhire' ? renderAdminNewHireInvoicing() :
@@ -1583,9 +1698,17 @@
   function renderAdminStaff(){
     var roleFilter = STATE.staffRoleFilter || 'all';
     var visibleProfiles = STATE.profiles.filter(function(p){ return roleFilter==='all' || p.role===roleFilter; });
-    var COL_COUNT = 11;
+    var COL_COUNT = 12;
     var staffRows = visibleProfiles.map(function(p){
       var allocCell;
+      // Whether THIS employee's own wallet gets prorated for a partial
+      // first year (set at Add Employee time) - editable here too, so it's
+      // not stuck as a one-time decision. This is the standing setting the
+      // wallet calculation (computeWallet) always follows; it's separate
+      // from the one-off "Prorate" override on a specific New Hire
+      // Invoicing run, which only affects billing and never this.
+      var prorateOn = p.prorate_entitlement_default!==false;
+      var prorateCell = '<label class="tiny"><input type="checkbox" data-action="toggle-prorate-default" data-id="'+p.id+'" '+(prorateOn?'checked':'')+'/> '+(prorateOn?'On':'Off')+'</label>';
       if(STATE.promotingEmployeeId===p.id){
         var promoDelta = (STATE.promotionDraftAllocation||0) - (Number(p.annual_allocation)||0);
         allocCell = '<div style="min-width:260px;">'+
@@ -1618,14 +1741,22 @@
       var familyCell = '<button class="link-btn" data-action="toggle-family-row" data-id="'+p.id+'">'+
         (myFamily.length ? (myFamily.length+' member'+(myFamily.length>1?'s':'')) : '-')+
         (isExpanded ? ' ▴' : ' ▾')+'</button>';
+      // The Status column shouldn't rely solely on the `active` flag - a
+      // passed Date of Termination now locks someone out on its own (see
+      // loadProfileAndData), so the directory needs to reflect that even
+      // when nobody has separately clicked Deactivate for them.
+      var isTerminated = p.date_of_termination && p.date_of_termination<=todayStr();
+      var statusLabel = isTerminated ? 'Terminated' : (p.active ? 'Active' : 'Inactive');
+      var statusClass = (isTerminated || !p.active) ? 'status-rejected' : 'status-approved';
       var row = '<tr><td>'+escapeHtml(p.name)+'</td><td>'+escapeHtml(p.email)+'</td><td>'+escapeHtml(p.nric||'-')+'</td>'+
         '<td><span class="role-chip">'+roleLabel+'</span></td>'+
         '<td>'+familyCell+'</td>'+
         '<td>'+allocCell+'</td>'+
+        '<td>'+prorateCell+'</td>'+
         '<td>'+fmtDate(p.date_of_joining)+'</td>'+
         '<td>'+(p.effective_date ? fmtDate(p.effective_date) : '-')+'</td>'+
         '<td>'+terminationCell+'</td>'+
-        '<td><span class="status-pill '+(p.active?'status-approved':'status-rejected')+'">'+(p.active?'Active':'Inactive')+'</span></td>'+
+        '<td><span class="status-pill '+statusClass+'">'+statusLabel+'</span></td>'+
         '<td class="actions-cell">'+actionsCell+'</td></tr>';
       var expandRow = isExpanded ? ('<tr class="reject-row"><td colspan="'+COL_COUNT+'">'+renderFamilyExpandPanel(p, myFamily)+'</td></tr>') : '';
       return row+expandRow;
@@ -1667,10 +1798,15 @@
         '<label class="mini-field">Full Name<input type="text" name="name" placeholder="e.g. Jane Lim" required /></label>'+
         '<label class="mini-field">Work Email<input type="email" name="email" placeholder="jane@company.com" required /></label>'+
         '<label class="mini-field">Date of Employment<input type="date" name="dateOfEmployment" style="width:160px" required /></label>'+
-        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" style="width:160px" required /></label>'+
+        '<label class="mini-field">Effective Date<input type="date" name="effectiveDate" id="add-emp-effective-date" style="width:160px" required oninput="window.updateAddEmployeeProratePreview()" /></label>'+
         '<label class="mini-field">PayNow Mobile Number<input type="tel" name="paynowMobile" placeholder="e.g. 91234567" style="width:160px" required /></label>'+
         '<label class="mini-field">NRIC<input type="text" name="nric" placeholder="e.g. S1234567A" style="width:140px" /></label>'+
-        '<label class="mini-field">Entitlement (SGD)<input type="number" name="annualAllocation" value="1000" min="0" step="1" style="width:140px" required /></label>'+
+        '<label class="mini-field">Entitlement (SGD)<input type="number" name="annualAllocation" id="add-emp-allocation" value="1000" min="0" step="1" style="width:140px" required oninput="window.updateAddEmployeeProratePreview()" /></label>'+
+        '<label class="mini-field" style="flex-basis:100%;flex-direction:row;align-items:center;gap:6px;">'+
+          '<input type="checkbox" name="prorateEntitlement" id="add-emp-prorate" checked style="width:auto;" onchange="window.updateAddEmployeeProratePreview()" /> '+
+          '<span>Prorate for partial first year</span>'+
+        '</label>'+
+        '<div class="field-hint" id="add-emp-prorate-preview" style="flex-basis:100%;"></div>'+
         (mode==='family' ? (
           '<div class="field-hint" style="flex-basis:100%;margin-top:4px;">Family members (share this employee\'s entitlement - no separate login or email)</div>'+
           '<div id="family-draft-rows" style="flex-basis:100%;">'+familyDraftRowHtml()+'</div>'+
@@ -1695,8 +1831,9 @@
     '<div class="card"><div class="card-title">Employee Directory</div>'+
       '<div class="filter-row">'+staffFilters.map(function(f){ return '<button class="chip-filter '+(roleFilter===f.key?'active':'')+'" data-action="filter-staff" data-filter="'+f.key+'">'+f.label+'</button>'; }).join('')+'</div>'+
       '<div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>NRIC</th><th>Role</th><th>Family</th><th>Annual Allocation</th><th>Date of Employment</th><th>Effective Date</th><th>Date of Termination</th><th>Status</th><th>Actions</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>NRIC</th><th>Role</th><th>Family</th><th>Annual Allocation</th><th>Prorate</th><th>Date of Employment</th><th>Effective Date</th><th>Date of Termination</th><th>Status</th><th>Actions</th></tr></thead>'+
       '<tbody>'+staffRows+'</tbody></table></div>'+
+      '<div class="field-hint">The <strong>Prorate</strong> column is this employee\'s standing setting - On means their own wallet shows a reduced amount for a partial first year (matching what New Hire Invoicing normally bills for them); Off means their wallet always shows the full entitlement. It reverts to having no effect automatically from the January after they join. Changing it here does not touch any invoice already issued or in progress.</div>'+
       '<div class="field-hint">Deleting an employee removes their account, all their claim history, and their notifications - permanently, and this cannot be undone. Their login itself still technically exists in Supabase until removed from the dashboard\'s Authentication &gt; Users page too, but they won\'t be able to do anything with it here once deleted.</div>'+
     '</div>';
   }
@@ -1713,18 +1850,31 @@
   }
 
   function renderAdminAccess(){
+    var today = todayStr();
     var rows = STATE.profiles.map(function(p){
+      // Same Terminated/Active/Inactive logic as Employee Directory's Status
+      // column (renderAdminStaff), kept in sync here so this screen never
+      // disagrees with that one about whether someone can actually log in -
+      // a Date of Termination set over on Employee Directory already blocks
+      // login on its own (see loadProfileAndData), whether or not anyone
+      // has separately clicked Deactivate for them here.
+      var isTerminated = p.date_of_termination && p.date_of_termination<=today;
+      var statusLabel = isTerminated ? 'Terminated' : (p.active ? 'Active' : 'Inactive');
+      var statusClass = (isTerminated || !p.active) ? 'status-rejected' : 'status-approved';
       return '<tr><td>'+escapeHtml(p.name)+'</td><td>'+escapeHtml(p.email)+'</td>'+
         '<td><select data-action="change-role" data-id="'+p.id+'"><option value="user" '+(p.role==='user'?'selected':'')+'>User</option><option value="admin" '+(p.role==='admin'?'selected':'')+'>Admin</option></select></td>'+
         '<td>'+fmtDate((p.created_at||'').slice(0,10))+'</td>'+
         '<td>'+(!p.active && p.deactivated_at ? fmtDate((p.deactivated_at||'').slice(0,10)) : '-')+'</td>'+
+        '<td><span class="status-pill '+statusClass+'">'+statusLabel+'</span></td>'+
         '<td><button class="btn btn-sm btn-ghost" data-action="toggle-active" data-id="'+p.id+'">'+(p.active?'Deactivate':'Activate')+'</button></td>'+
       '</tr>';
     }).join('');
     return '<div class="card"><div class="card-title">User Access Rights</div><div class="table-wrap"><table class="data-table">'+
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Date Added</th><th>Date of Deactivation</th><th>Status</th></tr></thead>'+
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Date Added</th><th>Date of Deactivation</th><th>Status</th><th>Actions</th></tr></thead>'+
       '<tbody>'+rows+'</tbody></table></div>'+
-      '<div class="field-hint">Password resets are self-service - employees use "Forgot password?" on the login screen.</div></div>';
+      '<div class="field-hint">Password resets are self-service - employees use "Forgot password?" on the login screen.</div>'+
+      '<div class="field-hint">Status shows <strong>Terminated</strong> once an employee\'s Date of Termination (set on Employee Directory) has passed, even if nobody has separately clicked Deactivate for them here - their login is already blocked either way, so there\'s no need to do both.</div>'+
+    '</div>';
   }
 
   function sortArrow(col, activeCol, dir){
@@ -1912,6 +2062,26 @@
     return row;
   }
 
+  // Money Holding / Total Planned Entitlement transparency panel shown at
+  // the top of New Hire Invoicing, so the 80% figure driving the badge is
+  // never a black box - the admin sees the exact numbers it came from.
+  function renderEntitlementCushionPanel(){
+    var c = entitlementCushionStatus();
+    var pctLabel = c.planned>0 ? Math.round(c.utilisation*100)+'%' : '&mdash;';
+    var statusLine = c.planned<=0
+      ? 'No active employees yet - nothing to fund.'
+      : c.belowThreshold
+        ? ('80% or more of the total entitlement has been utilised - '+c.reminderCount+' item'+(c.reminderCount===1?'':'s')+' below (new hires and/or promotions) should be batched into an invoice to top up the float.')
+        : 'Utilisation is under 80% - any new hires or promotions below can wait; no invoicing required yet.';
+    var statusColor = (c.planned>0 && c.belowThreshold) ? 'var(--danger)' : 'var(--success)';
+    return '<div class="report-summary" style="margin-bottom:8px;">'+
+        'Money Holding: <strong>'+fmtMoney(c.holding)+'</strong> &middot; '+
+        'Total Planned Entitlement: <strong>'+fmtMoney(c.planned)+'</strong> &middot; '+
+        'Utilisation: <strong>'+pctLabel+'</strong>'+
+      '</div>'+
+      '<div class="field-hint" style="margin-bottom:14px; color:'+statusColor+';">'+statusLine+'</div>';
+  }
+
   function renderAdminNewHireInvoicing(){
     var allPending = pendingEntitlementItems();
     var from = STATE.entitlementDateFrom, to = STATE.entitlementDateTo;
@@ -1928,8 +2098,10 @@
     return ''+
     '<div class="card">'+
       '<div class="card-title">New Hire Invoicing</div>'+
+      renderEntitlementCushionPanel()+
       '<div class="field-hint" style="margin-bottom:14px;">Every employee who hasn\'t yet been entitlement-invoiced, and every allocation change (promotion) awaiting invoicing - across any date range, not just one month. Tick whoever you\'re billing now; unticked rows just stay here for next time.'+
         (isInitial ? ' <strong>This will be this client\'s Initial Invoice</strong> - it also adds a one-time per-pax headcount establishment charge for every employee included.' : '')+
+        ' The <strong>Prorate</strong> checkbox below starts from that employee\'s own setting (Employee Management &rarr; Prorate column) but only affects <em>this invoice</em> - toggling it here is a one-time override for this billing run and never changes what the employee sees in their own wallet.'+
       '</div>'+
       '<div class="report-controls" style="margin-bottom:14px;">'+
         '<label class="mini-field">From<input type="date" data-action="set-entitlement-date-from" value="'+(from||'')+'"/></label>'+
@@ -2797,9 +2969,29 @@
     });
   }
 
-  function uploadReceipt(file){
+  // Makes a Storage object name safe and readable: letters/numbers/dashes
+  // only, no run of repeated dashes, nothing leading/trailing.
+  function sanitizeForFilename(s){
+    return String(s||'').trim().replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'file';
+  }
+
+  function uploadReceipt(file, category, receiptDate){
     var ext = (file.name.split('.').pop()||'bin').toLowerCase();
-    var path = STATE.session.user.id + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.' + ext;
+    // The FOLDER stays keyed by the employee's auth id - that's what the
+    // receipts_* Storage policies check to enforce "only this employee or
+    // an admin can see this file", and ids are stable/unique in a way a
+    // name never is (two employees can share a name, and a name can be
+    // corrected later). The FILENAME, though, is just for humans browsing
+    // Storage directly during an audit - so it leads with the employee's
+    // name, then the receipt date and category, so a folder's contents are
+    // self-explanatory without having to open the app or match the file to
+    // a claims row first.
+    var namePart = sanitizeForFilename(STATE.profile && STATE.profile.name);
+    var datePart = sanitizeForFilename(receiptDate || new Date().toISOString().slice(0,10));
+    var catPart = sanitizeForFilename(category);
+    var uniquePart = Date.now() + '-' + Math.random().toString(36).slice(2,8);
+    var filename = [namePart, datePart, catPart, uniquePart].filter(Boolean).join('_') + '.' + ext;
+    var path = STATE.session.user.id + '/' + filename;
     return withNetworkRetry(function(){ return supabase.storage.from('receipts').upload(path, file); }).then(function(res){
       if(res.error) throw res.error;
       return {path:path, name:file.name};
@@ -2839,7 +3031,7 @@
       }
       STATE.claimFormError = null;
       btn.textContent = 'Uploading...';
-      return uploadReceipt(file).then(function(receipt){
+      return uploadReceipt(file, category, receiptDate).then(function(receipt){
         return withNetworkRetry(function(){
           return supabase.from('claims').insert({
             employee_id: STATE.session.user.id, category:category, vendor:vendor,
@@ -2954,7 +3146,7 @@
 
       if(file){
         if(file.size > 4*1024*1024){ showToast('File too large - please upload a file under 4MB.', 'error'); return null; }
-        return uploadReceipt(file).then(function(receipt){
+        return uploadReceipt(file, category, receiptDate).then(function(receipt){
           updates.receipt_path = receipt.path; updates.receipt_name = receipt.name;
           return applyUpdate();
         }).catch(function(err){ showToast('Upload failed: '+(err.message||err), 'error'); });
@@ -2991,6 +3183,7 @@
     var nric = form.nric.value.trim();
     var allocRaw = form.annualAllocation.value;
     var alloc = parseFloat(allocRaw);
+    var prorateEntitlement = !!(form.prorateEntitlement && form.prorateEntitlement.checked);
     if(!name || !email || !dateOfEmployment || !effectiveDate || !paynowMobile || allocRaw==='' || isNaN(alloc)){
       showToast('Please complete all fields before adding the employee.', 'error');
       return Promise.resolve();
@@ -3015,7 +3208,7 @@
     }
 
     return supabase.from('invites').upsert(
-      {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, nric: nric || null, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false},
+      {email:email, name:name, role:'user', annual_allocation:alloc, date_of_joining:dateOfEmployment, paynow_mobile:paynowMobile, effective_date:effectiveDate, nric: nric || null, welcome_email_sent:false, invited_by:STATE.session.user.id, used:false, prorate_entitlement_default:prorateEntitlement},
       {onConflict:'email'}
     ).then(function(res){
       if(res.error) throw new Error('Could not add employee: '+res.error.message);
@@ -3188,6 +3381,22 @@
     }).then(function(){ render(); });
   }
 
+  // Flips an employee's own standing Prorate setting (computeWallet reads
+  // this directly) after they've already been added - previously this could
+  // only be set once, at Add Employee time. Does not touch
+  // STATE.entitlementSelections directly - getEntitlementSelection() itself
+  // keeps any not-yet-manually-overridden New Hire Invoicing row following
+  // this setting live, so the Amount there updates the next time that row
+  // renders (e.g. switching tabs) without needing a page refresh. A row the
+  // admin has already hand-toggled keeps whatever they chose there.
+  function toggleProrateDefault(id, checked){
+    return supabase.from('profiles').update({prorate_entitlement_default:checked}).eq('id', id).then(function(res){
+      if(res.error){ showToast('Could not update Prorate setting: '+res.error.message, 'error'); render(); return; }
+      showToast('Prorate setting updated for this employee\'s wallet.', 'success');
+      return loadAppData();
+    }).then(function(){ render(); });
+  }
+
   // Changing an existing employee's allocation to a DIFFERENT figure is a
   // mid-year entitlement change (a promotion, or a correction) - rather than
   // saving it straight away, this opens an inline "give it an effective
@@ -3316,7 +3525,19 @@
         STATE.passwordRecovery=false; STATE.authView='login'; STATE.authError=''; STATE.authInfo='';
         render();
         return supabase.auth.signOut();
-      case 'nav': STATE.activeTab = btn.dataset.tab; STATE.claimFormError=null; render(); return Promise.resolve();
+      case 'nav':
+        STATE.activeTab = btn.dataset.tab; STATE.claimFormError=null; render();
+        // Landing on the Dashboard quietly re-pulls this employee's own
+        // data (profile, claims, etc.) in the background, so anything an
+        // admin changed for them elsewhere - like the Prorate toggle -
+        // shows up right away. The realtime subscription usually beats
+        // this to it already, but this guarantees it even if that
+        // connection ever drops. The current tab keeps showing whatever
+        // was already loaded while this runs, then re-renders once done.
+        if(STATE.activeTab==='dashboard' && STATE.profile && STATE.profile.role!=='admin'){
+          return loadAppData().then(function(){ render(); }).catch(function(err){ console.error('dashboard refresh failed', err); });
+        }
+        return Promise.resolve();
       case 'logout': return supabase.auth.signOut();
       case 'buy-pa': window.open('https://insure.aia.com.sg/aianow3/solitaire?f=43519&i=agy', '_blank', 'noopener,noreferrer'); return Promise.resolve();
       case 'buy-travel-insurance': window.open('https://sg-customer.qbe.com/travel/partner/01000960', '_blank', 'noopener,noreferrer'); return Promise.resolve();
@@ -3515,12 +3736,13 @@
     if(!action) return Promise.resolve();
     switch(action){
       case 'change-role': return changeRole(target.dataset.id, target.value);
+      case 'toggle-prorate-default': return toggleProrateDefault(target.dataset.id, target.checked);
       case 'reject-reason-select': toggleOtherReasonField(target); return Promise.resolve();
       case 'set-report-month': STATE.reportMonth = parseInt(target.value,10); render(); return Promise.resolve();
       case 'set-report-year': STATE.reportYear = (target.value==='ytd') ? 'ytd' : parseInt(target.value,10); render(); return Promise.resolve();
       case 'set-invoice-year': STATE.invoiceYear = parseInt(target.value,10); STATE.annualWaivers = {}; STATE.editingWaiverLine = null; render(); return Promise.resolve();
       case 'toggle-entitlement-check': { var selC = getEntitlementSelection(target.dataset.key); selC.checked = target.checked; render(); return Promise.resolve(); }
-      case 'toggle-entitlement-prorate': { var selP = getEntitlementSelection(target.dataset.key); selP.prorate = target.checked; render(); return Promise.resolve(); }
+      case 'toggle-entitlement-prorate': { var selP = getEntitlementSelection(target.dataset.key); selP.prorate = target.checked; selP.prorateManual = true; render(); return Promise.resolve(); }
       case 'set-entitlement-date-from': STATE.entitlementDateFrom = target.value || null; render(); return Promise.resolve();
       case 'set-entitlement-date-to': STATE.entitlementDateTo = target.value || null; render(); return Promise.resolve();
       default: return Promise.resolve();
@@ -3624,6 +3846,42 @@
      BOOTSTRAP
   ========================================================== */
   window.closeReceiptModal = function(){ STATE.modal=null; render(); };
+
+  // Live preview under the Add Employee form's new "Prorate" checkbox -- a
+  // direct DOM write (not STATE/render()) so typing in the Entitlement or
+  // Effective Date fields doesn't blow away whatever else is mid-edit in the
+  // form. Reuses the exact same whole-month convention as
+  // monthsEmployedInYear()/proratedAllocationForYear() (the functions the
+  // New Hire Invoicing tab and the wallet calculation both rely on), so this
+  // preview always matches what the employee will actually see.
+  window.updateAddEmployeeProratePreview = function(){
+    var hint = document.getElementById('add-emp-prorate-preview');
+    if(!hint) return;
+    var dateEl = document.getElementById('add-emp-effective-date');
+    var allocEl = document.getElementById('add-emp-allocation');
+    var checkEl = document.getElementById('add-emp-prorate');
+    var effectiveDate = dateEl ? dateEl.value : '';
+    var fullAlloc = allocEl ? parseFloat(allocEl.value) : NaN;
+    if(!effectiveDate || isNaN(fullAlloc)){ hint.textContent = ''; return; }
+    if(checkEl && !checkEl.checked){
+      hint.textContent = 'Prorate off - the wallet will show the full '+fmtMoney(fullAlloc)+' right away.';
+      return;
+    }
+    var currentYear = new Date().getFullYear();
+    var effYear = Number(effectiveDate.slice(0,4));
+    var effMonth = Number(effectiveDate.slice(5,7));
+    if(effYear > currentYear){
+      hint.textContent = 'Effective date is in a future year - the full '+fmtMoney(fullAlloc)+' will apply once it arrives.';
+      return;
+    }
+    if(effYear < currentYear){
+      hint.textContent = 'Effective date is in a past year - the full '+fmtMoney(fullAlloc)+' applies for '+currentYear+'.';
+      return;
+    }
+    var months = 12 - effMonth + 1;
+    var prorated = fullAlloc * (months/12);
+    hint.textContent = 'Wallet will show '+fmtMoney(prorated)+' for the rest of '+currentYear+' ('+months+' of 12 months); the full '+fmtMoney(fullAlloc)+' applies from January '+(currentYear+1)+'.';
+  };
 
   var app = document.getElementById('app');
   app.addEventListener('click', function(e){ handleClick(e).catch(function(err){ console.error(err); }); });
